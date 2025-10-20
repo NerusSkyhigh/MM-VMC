@@ -9,51 +9,73 @@
 #include "physics.h"
 
 typedef struct {
-    int64_t Ntw;    // Number of Target Walkers
-    int64_t Ncw;    // Number of Current Walkers
-    int64_t MNw;    // Maximum Number of Walkers in the buffer
-
     int64_t Np;     // Number of particles
-    double Et;      // Trial Energy
+
+    double* El;     // Local Energy
+    double aEl;     // Average Local Energy
+    double* x;      // Positions
+    double a1;
+    double a2;
 
     int64_t Nts;    // total Number of TimeSteps
     double dt;      // Timestep size
 
-    double* wa;             // Walker Arena for coordinates [MAXIMUM N WALKER * 3*N PARTICLES]
     DoubleBufferArena* Vb;   // potential (V) arena buffer [2*]
 
-} DMCdata;
+    //[TODO] Initialization is yet to be done
+} VMCdata;
 
 
 
-void initUniform(const DMCdata* dmcd) {
-    // [TODO] Use the VMC esteem to compute the initial state
-    for(int i=0; i<dmcd->Ncw*3*dmcd->Np; i++) {
-        dmcd->wa[i] = rand()/(double)RAND_MAX; // [TODO] Choose a box size
+void initUniform(const VMCdata* vmcd) {
+    for(int i=0; i<vmcd->Np*3*vmcd->Np; i++) {
+        // [TODO] Add periodic boundary conditions
+        vmcd->x[i] = rand()/(double)RAND_MAX;
     }
 }
 
-void diffuse(const DMCdata* dmcd) {
+void diffuse(const VMCdata* dmcd) {
     for(int i=0; i<dmcd->Ncw*3*dmcd->Np; i++) {
         // [TODO] Implement importance sampling
-        dmcd->wa[i] +=randn()*dmcd->dt;
+        dmcd->x[i] +=randn()*dmcd->dt;
     }
 }
 
-void computeEnergy(const DMCdata* dmcd) {
-    for(int walker=0; walker<dmcd->Ncw; walker++) {
-        double V = 0;
-        for(int p1=0; p1<dmcd->Np; p1++) {
-            int64_t idx1 = walker*(3*dmcd->Np) + 3*p1;
-            double x1 = dmcd->wa[idx1];
-            double y1 = dmcd->wa[idx1+1];
-            double z1 = dmcd->wa[idx1+2];
+void computeEnergy(const VMCdata* vmcd) {
+    double El = 0;
+    for(int pair=0; pair<vmcd->Np*(vmcd->Np-1)/2; pair++) {
+        // NDR: For a CPU the usual for(i) {for(j)} is faster, but this form will come handy on the GPU
+        const int p1 = (int) (1+sqrt(1+8*pair))/2;
+        const int p2 = pair-p1*(p1-1)/2;
 
-            for(int p2=p1+1; p2<dmcd->Np; p2++) {
-                int64_t idx2 = walker*dmcd->Np + p2;
-                double x2 = dmcd->wa[idx2];
-                double y2 = dmcd->wa[idx2+1];
-                double z2 = dmcd->wa[idx2+2];
+        const double x1 = vmcd->x[p1];
+        const double y1 = vmcd->x[p1+1];
+        const double z1 = vmcd->x[p1+2];
+
+        const double x2 = vmcd->x[p2];
+        const double y2 = vmcd->x[p2+1];
+        const double z2 = vmcd->x[p2+2];
+
+        const double r = NORM(x1-x2,y1-y2,z1-z2);
+
+        const double dfov = dWU_FEENBERG_TPWF(r, );
+
+        // [TODO] Include -hbar/2m
+    }
+
+    for(int walker=0; walker<vmcd->Ncw; walker++) {
+        double V = 0;
+        for(int p1=0; p1<vmcd->Np; p1++) {
+            int64_t idx1 = walker*(3*vmcd->Np) + 3*p1;
+            double x1 = vmcd->x[idx1];
+            double y1 = vmcd->x[idx1+1];
+            double z1 = vmcd->x[idx1+2];
+
+            for(int p2=p1+1; p2<vmcd->Np; p2++) {
+                int64_t idx2 = walker*vmcd->Np + p2;
+                double x2 = vmcd->x[idx2];
+                double y2 = vmcd->x[idx2+1];
+                double z2 = vmcd->x[idx2+2];
 
                 double r = NORM(x1-x2, y1-y2, z1-z2);
                 //V += he_he_potential(r);
@@ -61,12 +83,12 @@ void computeEnergy(const DMCdata* dmcd) {
             }
         }
         // [TODO] Consider if it's worth clearing the buffer each time. This code doesn't need it
-        dmcd->Vb->buffers[dmcd->Vb->new][walker] = V;
+        vmcd->Vb->buffers[vmcd->Vb->new][walker] = V;
     }
 
 }
 
-void branch(DMCdata* dmcd) {
+void branch(VMCdata* dmcd) {
     // [TODO]
     dmcd->Nts+1;
 }
@@ -79,44 +101,40 @@ int main(void) {
      *  Each particle has 3 coordinates stored in a double (8 bytes):
      *  size = 8 bytes/coordinate * 3 coordinates/particle * 1_000 particles/walkers * 10_000 walkers = 240 MB.
      */
-    DMCdata* dmcd = malloc(sizeof(DMCdata));
-    dmcd->Ntw = 10000;//10000; // 10_000 walkers
-    dmcd->Ncw = dmcd->Ntw;
-    dmcd->MNw = 10*dmcd->Ncw; // Let's use a 10x buffer
-    dmcd->Np = 100; //1000; // 1_000 Helium atoms
+    VMCdata* vmcd = malloc(sizeof(VMCdata));
+    vmcd->Np = 100; // 100 Helium atoms
 
-    dmcd->Nts = 1000000; // 1_000_000 timesteps
-    dmcd->dt = 1.; // Delta timestep
+    vmcd->Nts = 1000000; // 1_000_000 timesteps
+    vmcd->dt = 1.; // Delta timestep
     printf("Resources loaded\n");
 
-    // 2. Generate walkers
-    // [TODO] Check if a double buffer is needed
-    dmcd->wa = malloc(sizeof(double)* (3*dmcd->Np)*dmcd->MNw);
-    initUniform(dmcd);
+    // 2. Generate positions
+    vmcd->x = malloc(sizeof(double)* (3*vmcd->Np) );
+    initUniform(vmcd);
     printf("Walkers initialized\n");
 
     // 2.2 Compute energy for the initial configuration
-    dmcd->Vb = malloc(sizeof(DoubleBufferArena));
-    initDoubleBufferArena(dmcd->Vb, dmcd->MNw);
+    vmcd->Vb = malloc(sizeof(DoubleBufferArena));
+    initDoubleBufferArena(vmcd->Vb, vmcd->MNw);
     printf("Double buffer initialized\n");
 
-    computeEnergy(dmcd);
-    DOUBLE_BUFFER_NEXT_STEP(dmcd->Vb);
+    computeEnergy(vmcd);
+    DOUBLE_BUFFER_NEXT_STEP(vmcd->Vb);
     printf("Initial energy computed\n");
 
     // 3. Main loop of the DMC
     clock_t begin = clock();
-    for(int t=0; t<dmcd->Nts; t++) {
-        diffuse(dmcd);
-        computeEnergy(dmcd);
-        branch(dmcd);
+    for(int t=0; t<vmcd->Nts; t++) {
+        diffuse(vmcd);
+        computeEnergy(vmcd);
+        branch(vmcd);
 
-        DOUBLE_BUFFER_NEXT_STEP(dmcd->Vb);
+        DOUBLE_BUFFER_NEXT_STEP(vmcd->Vb);
 
         if(t % 10 == 0) {
             clock_t end = clock();
             double time_spent = (double)(end - begin) / CLOCKS_PER_SEC;
-            printf("Iteration %6d/%6lld (took %lf s; %lf per iteration)\n", t, dmcd->Nts, time_spent,time_spent/10);
+            printf("Iteration %6d/%6lld (took %lf s; %lf per iteration)\n", t, vmcd->Nts, time_spent,time_spent/10);
             fflush(stdout);
             begin = clock();
         }
