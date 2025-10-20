@@ -48,14 +48,14 @@ double he_he_potential(const double r) {
 
     /* damping functions */
     // [TODO] Check if they are all really the same
-    double F6  = (r < 1.0) ? exp(-pow(D / r - 1.0, 2.0)) : 1.0;
-    double F8  = F6;
-    double F10 = F6;
+    const double F6  = (r < 1.0) ? exp(-pow(D / r - 1.0, 2.0)) : 1.0;
+    const double F8  = F6;
+    const double F10 = F6;
     //double F12 = F6;
 
     /* reduced potential V*(x) */
     //[TODO] Store r2i (the inverse) so save time on the division?
-    double r2 = r * r;      // tmp
+    const double r2 = r * r;      // tmp
     double r4 = r2 * r2;    //tmp
     double r6 = r4 * r2;
     double r8 = r4 * r4;
