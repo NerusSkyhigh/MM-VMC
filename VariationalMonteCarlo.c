@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-#include <string.h>
 #include <time.h>
 
 #include "gglib/gg_math.h"
@@ -9,93 +8,104 @@
 #include "physics.h"
 
 typedef struct {
-    int64_t Np;     // Number of particles
+    int64_t Np;         // Number of particles
 
-    double* El;     // Local Energy
-    double aEl;     // Average Local Energy
-    double* x;      // Positions
+    double El;         // Local Energy
+    double aEl;         // Average Local Energy
+    DoubleBuffer* xb;   // Positions
     double a1;
     double a2;
 
+    double Psi2;
+
     int64_t Nts;    // total Number of TimeSteps
     double dt;      // Timestep size
-
-    DoubleBufferArena* Vb;   // potential (V) arena buffer [2*]
-
-    //[TODO] Initialization is yet to be done
 } VMCdata;
 
 
 
 void initUniform(const VMCdata* vmcd) {
     for(int i=0; i<vmcd->Np*3*vmcd->Np; i++) {
+        // [TODO] Implement simulation box
         // [TODO] Add periodic boundary conditions
-        vmcd->x[i] = rand()/(double)RAND_MAX;
+        vmcd->xb->buffers[vmcd->xb->new][i] = rand()/(double) RAND_MAX;
     }
 }
 
-void diffuse(const VMCdata* dmcd) {
-    for(int i=0; i<dmcd->Ncw*3*dmcd->Np; i++) {
-        // [TODO] Implement importance sampling
-        dmcd->x[i] +=randn()*dmcd->dt;
+void diffuse(const VMCdata* vmcd) {
+    for(int i=0; i<3*vmcd->Np; i++) {
+        // [TODO] Implement sampling with velocity
+        // [TODO] Find a good value for \Delta R
+        double const deltaR = 0.1;
+        vmcd->xb->buffers[vmcd->xb->new][i] = vmcd->xb->buffers[vmcd->xb->old][i]+randn()*deltaR;
     }
 }
 
-void computeEnergy(const VMCdata* vmcd) {
+/**
+ * @brief Computes the energy of the position stored in the vmcd->xb->new buffer
+ * @return Local energy of the configuration
+ */
+double computeEnergy(const VMCdata* vmcd) {
     double El = 0;
     for(int pair=0; pair<vmcd->Np*(vmcd->Np-1)/2; pair++) {
         // NDR: For a CPU the usual for(i) {for(j)} is faster, but this form will come handy on the GPU
         const int p1 = (int) (1+sqrt(1+8*pair))/2;
         const int p2 = pair-p1*(p1-1)/2;
 
-        const double x1 = vmcd->x[p1];
-        const double y1 = vmcd->x[p1+1];
-        const double z1 = vmcd->x[p1+2];
+        const double x1 = vmcd->xb->buffers[vmcd->xb->new][p1];
+        const double y1 = vmcd->xb->buffers[vmcd->xb->new][p1+1];
+        const double z1 = vmcd->xb->buffers[vmcd->xb->new][p1+2];
 
-        const double x2 = vmcd->x[p2];
-        const double y2 = vmcd->x[p2+1];
-        const double z2 = vmcd->x[p2+2];
+        const double x2 = vmcd->xb->buffers[vmcd->xb->new][p2];
+        const double y2 = vmcd->xb->buffers[vmcd->xb->new][p2+1];
+        const double z2 = vmcd->xb->buffers[vmcd->xb->new][p2+2];
 
         const double r = NORM(x1-x2,y1-y2,z1-z2);
 
-        const double dfov = dWU_FEENBERG_TPWF(r, );
+        const double f   = WU_FEENBERG_TPWF(r, vmcd->a1, vmcd->a2);
+        const double df  = dWU_FEENBERG_TPWF(r, vmcd->a1, vmcd->a2);  // (df/dr)
+        const double ddf = ddWU_FEENBERG_TPWF(r, vmcd->a1, vmcd->a2); // (ddf/dr2)
+        const double dfof = df/f;
 
-        // [TODO] Include -hbar/2m
+        // [TODO] Include -hbar/2m with correct units
+        El += - ( ddf/f - (dfof)*(dfof) + 2/r * dfof ) + LJ_potential(r);
     }
-
-    for(int walker=0; walker<vmcd->Ncw; walker++) {
-        double V = 0;
-        for(int p1=0; p1<vmcd->Np; p1++) {
-            int64_t idx1 = walker*(3*vmcd->Np) + 3*p1;
-            double x1 = vmcd->x[idx1];
-            double y1 = vmcd->x[idx1+1];
-            double z1 = vmcd->x[idx1+2];
-
-            for(int p2=p1+1; p2<vmcd->Np; p2++) {
-                int64_t idx2 = walker*vmcd->Np + p2;
-                double x2 = vmcd->x[idx2];
-                double y2 = vmcd->x[idx2+1];
-                double z2 = vmcd->x[idx2+2];
-
-                double r = NORM(x1-x2, y1-y2, z1-z2);
-                //V += he_he_potential(r);
-                V += LJ_potential(r);
-            }
-        }
-        // [TODO] Consider if it's worth clearing the buffer each time. This code doesn't need it
-        vmcd->Vb->buffers[vmcd->Vb->new][walker] = V;
-    }
-
+    return El;
 }
 
-void branch(VMCdata* dmcd) {
-    // [TODO]
-    dmcd->Nts+1;
+/**
+ * @brief Computes the wavefunciton squared (aka the non normalized probability of a configuration)
+ * @return The wavefunction squared
+ * @warning This function assumes a bosonic system with single wave function given by `WU_FEENBERG_TPWF`.
+ */
+double computePsi2(const VMCdata* vmcd) {
+    double Psi = 1;
+    for(int pair=0; pair<vmcd->Np*(vmcd->Np-1)/2; pair++) {
+        // NDR: For a CPU the usual for(i) {for(j)} is faster, but this form will come handy on the GPU
+        const int p1 = (int) (1+sqrt(1+8*pair))/2;
+        const int p2 = pair-p1*(p1-1)/2;
+
+        const double x1 = vmcd->xb->buffers[vmcd->xb->new][p1];
+        const double y1 = vmcd->xb->buffers[vmcd->xb->new][p1+1];
+        const double z1 = vmcd->xb->buffers[vmcd->xb->new][p1+2];
+
+        const double x2 = vmcd->xb->buffers[vmcd->xb->new][p2];
+        const double y2 = vmcd->xb->buffers[vmcd->xb->new][p2+1];
+        const double z2 = vmcd->xb->buffers[vmcd->xb->new][p2+2];
+
+        const double r = NORM(x1-x2,y1-y2,z1-z2);
+        const double f   = WU_FEENBERG_TPWF(r, vmcd->a1, vmcd->a2);
+
+        Psi *= f*f;
+    }
+    return Psi;
 }
 
 
 
 int main(void) {
+    srand(time(NULL));
+
     /* 1. Allocate resources
      * MEMORY USAGE:
      *  Each particle has 3 coordinates stored in a double (8 bytes):
@@ -109,27 +119,37 @@ int main(void) {
     printf("Resources loaded\n");
 
     // 2. Generate positions
-    vmcd->x = malloc(sizeof(double)* (3*vmcd->Np) );
+    vmcd->xb = malloc(sizeof(DoubleBuffer));
+    initDoubleBuffer( &(vmcd->xb), vmcd->Np);
     initUniform(vmcd);
     printf("Walkers initialized\n");
 
     // 2.2 Compute energy for the initial configuration
-    vmcd->Vb = malloc(sizeof(DoubleBufferArena));
-    initDoubleBufferArena(vmcd->Vb, vmcd->MNw);
-    printf("Double buffer initialized\n");
+    vmcd->El = computeEnergy(vmcd);
+    printf("Initial energy computed.\n");
+    vmcd->Psi2 = computePsi2(vmcd);
+    printf("Psi2 computed.\n");
+    DOUBLE_BUFFER_NEXT_STEP(vmcd->xb);
 
-    computeEnergy(vmcd);
-    DOUBLE_BUFFER_NEXT_STEP(vmcd->Vb);
-    printf("Initial energy computed\n");
-
-    // 3. Main loop of the DMC
+    // 3. Main loop of the VMC
     clock_t begin = clock();
     for(int t=0; t<vmcd->Nts; t++) {
         diffuse(vmcd);
-        computeEnergy(vmcd);
-        branch(vmcd);
+        const double Psi2 = computePsi2(vmcd);
 
-        DOUBLE_BUFFER_NEXT_STEP(vmcd->Vb);
+        // GPU do not like branching, so I do not check if the ratio is >= 1, the algorithm works nevertheless and
+        // no resources are wasted (on GPU)
+        const double r = rand()/(double) RAND_MAX;
+        if(r<=Psi2/vmcd->Psi2) {
+            // Monte Carlo Move accepted
+            vmcd->El = computeEnergy(vmcd); // Compute new local energy
+            vmcd->Psi2 = Psi2; // Copy the new probability
+            DOUBLE_BUFFER_NEXT_STEP(vmcd->xb); // Accept the new position
+        }
+
+        // [TODO] Add code to change the vlaue of the parameters
+
+
 
         if(t % 10 == 0) {
             clock_t end = clock();
