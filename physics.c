@@ -5,12 +5,6 @@
 
 #include "physics.h"
 
-/**
- * @brief  Computes the `Aziz & Slaman (1991) compromise potential (LM2M2)` for He-He interaction
- * @param r Distance between the two He atoms
- * @return the potential between the two atoms
- * @warning This potential has a discontinuous derivative
- */
 double he_he_potential(const double r) {
     // The potential is negligible at that point
     if(r>14) return 0;
@@ -53,12 +47,6 @@ double he_he_potential(const double r) {
     return eps * Vstar; // [TODO] Work in eps units
 }
 
-/**
- * @brief  Computes the Lennard-Jones Potential as a proxy for He-He interaction
- * @param r Distance between the two He atoms
- * @return the potential between the two atoms
- * @warning Assumes distances in [$\sigma$] and energy in [$4\epsilon$]
- */
 double LJ_potential(double const r) {
     const double ri = 1. / r;
     const double ri6 = (ri * ri * ri) * (ri * ri * ri);
@@ -67,18 +55,18 @@ double LJ_potential(double const r) {
     return ri12-ri6;
 }
 
-inline double WU_FEENBERG_TPWF(const double r, const double a1, const double a2) {
+double WU_FEENBERG_TPWF(const double r, const double a1, const double a2) {
     return exp(-pow(a1/r, a2) );
 }
 
 
-inline double dWU_FEENBERG_TPWF(double r, double a1, double a2) {
+double dWU_FEENBERG_TPWF(const double r, const double a1, const double a2) {
     const double t = pow(a1/r, a2);
     return (a2/r)*t*exp(t);
 }
 
 
-inline double ddWU_FEENBERG_TPWF(double r, double a1, double a2) {
+double ddWU_FEENBERG_TPWF(const double r, const double a1, const double a2) {
     const double t = pow(a1/r, a2);
     return a2/(r*r) * exp(-t) * t*(a2*(t-1)-1);
 }

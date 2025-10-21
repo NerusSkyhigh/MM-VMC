@@ -20,7 +20,7 @@ typedef struct {
     double dt;      // Timestep size
 
     double* wa;             // Walker Arena for coordinates [MAXIMUM N WALKER * 3*N PARTICLES]
-    DoubleBufferArena* Vb;   // potential (V) arena buffer [2*]
+    DoubleBuffer* Vb;   // potential (V) arena buffer [2*]
 
 } VMCdata;
 
@@ -33,10 +33,10 @@ void initUniform(const VMCdata* vmcd) {
     }
 }
 
-void diffuse(const VMCdata* dmcd) {
-    for(int i=0; i<dmcd->Ncw*3*dmcd->Np; i++) {
+void diffuse(const VMCdata* vmcd) {
+    for(int i=0; i<vmcd->Ncw*3*vmcd->Np; i++) {
         // [TODO] Implement importance sampling
-        dmcd->wa[i] +=randn()*dmcd->dt;
+        vmcd->wa[i] +=randn()*vmcd->dt;
     }
 }
 
@@ -96,8 +96,8 @@ int main(void) {
     printf("Walkers initialized\n");
 
     // 2.2 Compute energy for the initial configuration
-    dmcd->Vb = malloc(sizeof(DoubleBufferArena));
-    initDoubleBufferArena(dmcd->Vb, dmcd->MNw);
+    dmcd->Vb = malloc(sizeof(DoubleBuffer));
+    initDoubleBuffer(dmcd->Vb, dmcd->MNw);
     printf("Double buffer initialized\n");
 
     computeEnergy(dmcd);
