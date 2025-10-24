@@ -48,15 +48,21 @@ double he_he_potential(const double r) {
 }
 
 double LJ_potential(double const r) {
-    const double ri = 1. / r;
+    const double sigma = 2.556; // [Angstrom]
+    const double ri = sigma / r;
     const double ri6 = (ri * ri * ri) * (ri * ri * ri);
     const double ri12 = ri6 * ri6;
+    const double fourEpsilon = 4.*10.22; // [Kelvin]
 
-    return ri12-ri6;
+    return fourEpsilon*(ri12-ri6);
 }
 
 double WU_FEENBERG_TPWF(const double r, const double a1, const double a2) {
     return exp(-pow(a1/r, a2) );
+}
+
+double logWU_FEENBERG_TPWF(const double r, const double a1, const double a2) {
+    return -pow(a1/r, a2);
 }
 
 
@@ -65,10 +71,19 @@ double dWU_FEENBERG_TPWF(const double r, const double a1, const double a2) {
     return (a2/r)*t*exp(t);
 }
 
+double logdWU_FEENBERG_TPWF(const double r, const double a1, const double a2) {
+    const double t = pow(a1/r, a2);
+    return log(a2/r*t)+t;
+}
+
 
 double ddWU_FEENBERG_TPWF(const double r, const double a1, const double a2) {
     const double t = pow(a1/r, a2);
     return a2/(r*r) * exp(-t) * t*(a2*(t-1)-1);
 }
 
+double logddWU_FEENBERG_TPWF(const double r, const double a1, const double a2) {
+    const double t = pow(a1/r, a2);
+    return log(a2/(r*r) * t*(a2*(t-1)-1) )-t;
+}
 

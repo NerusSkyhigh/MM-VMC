@@ -30,6 +30,15 @@ double LJ_potential(double const r);
 double WU_FEENBERG_TPWF(const double r, const double a1, const double a2);
 
 /**
+ * @brief Logarithm of the function @fn WU_FEENBERG_TPWF
+ * @param r Distance between the two particles
+ * @param a1 variational parameter 1. It's similar to a cut-off for the interaction
+ * @param a2 variational parameter 2. It's similar to the sharpness of the cut-off
+ * @return
+ */
+double logWU_FEENBERG_TPWF(const double r, const double a1, const double a2);
+
+/**
  * @brief Derivative of WU_FEENBERG_TPWF computed analytically
  * @param r Distance between the two particles
  * @param a1 variational parameter 1. It's similar to a cut-off for the interaction
@@ -42,6 +51,16 @@ double WU_FEENBERG_TPWF(const double r, const double a1, const double a2);
 double dWU_FEENBERG_TPWF(const double r, const double a1, const double a2);
 
 /**
+ * @brief Logarithm of the function @fn dWU_FEENBERG_TPWF
+ * @param r Distance between the two particles
+ * @param a1 variational parameter 1. It's similar to a cut-off for the interaction
+ * @param a2 variational parameter 2. It's similar to the sharpness of the cut-off
+ * @return value of the derivative
+ *
+ */
+double logdWU_FEENBERG_TPWF(const double r, const double a1, const double a2);
+
+/**
  * @brief Second Derivative of WU_FEENBERG_TPWF computed analytically
  * @param r Distance between the two particles
  * @param a1 variational parameter 1. It's similar to a cut-off for the interaction
@@ -52,3 +71,15 @@ double dWU_FEENBERG_TPWF(const double r, const double a1, const double a2);
  * https://www.wolframalpha.com/input?i=second+derive+exp%28-%28a_1%2Fr%29%5Ea_2%29
  */
 double ddWU_FEENBERG_TPWF(const double r, const double a1, const double a2);
+
+/**
+ * @brief Logarithm of the function @fn ddWU_FEENBERG_TPWF
+ * @param r Distance between the two particles
+ * @param a1 variational parameter 1. It's similar to a cut-off for the interaction
+ * @param a2 variational parameter 2. It's similar to the sharpness of the cut-off
+ * @return
+ *
+ * For comparison:
+ * https://www.wolframalpha.com/input?i=second+derive+exp%28-%28a_1%2Fr%29%5Ea_2%29
+ */
+double logddWU_FEENBERG_TPWF(const double r, const double a1, const double a2);

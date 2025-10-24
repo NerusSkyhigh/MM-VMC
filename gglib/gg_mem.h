@@ -1,4 +1,4 @@
-//
+// gg_mem.h
 // Created by Guglielmo Grillo on 17/10/25.
 //
 #pragma once
@@ -6,23 +6,27 @@
 
 /** @struct DoubleBuffer
  * @brief Double buffer
+ * @param N Size of a single buffer. Effective length is 2xN
+ * @param data All the data in the struct, both old and new values. Total size is 2N
+ * @param old Reference to the start of the buffer of old data
+ * @param new Reference to the start of the buffer of new data
+ * @warning Memory is not cleared on init. Use `DOUBLE_BUFFER_CLEAR_NEXT` and `DOUBLE_BUFFER_CLEAR_PREV`
  */
 typedef struct DoubleBuffer {
-    double* data;
-    double** buffers;
     size_t N;
-    short old;
-    short new;
+    double* data;
+    double* prev;
+    double* next;
 } DoubleBuffer;
-// [TODO] Consider if it's better to store the pointers in new and old instead of the indices
 
 /**
  *@brief Prepare the double buffer for the next iteration
  * @param db The pointer to the DoubleBuffer to prepare for the next step
  */
 #define DOUBLE_BUFFER_NEXT_STEP(db) do { \
-    (db)->old  = 1 - (db)->old; \
-    (db)->new = 1 - (db)->new; \
+    double* tmp = (db)->prev; \
+    (db)->prev  = (db)->next; \
+    (db)->next = tmp; \
 } while (0)
 
 /**
@@ -30,14 +34,22 @@ typedef struct DoubleBuffer {
  * @param db The pointer to the DoubleBuffer where the next buffer is stored
  */
 #define DOUBLE_BUFFER_CLEAR_NEXT(db) do {\
-    memset((db)->buffers[(db)->new], 0, sizeof(double)*(db)->N);\
+    memset((db)->next, 0, sizeof(double)*(db)->N);\
+} while (0)
+
+/**
+ *@brief Clear the prev buffer
+ * @param db The pointer to the DoubleBuffer where the prev buffer is stored
+ */
+#define DOUBLE_BUFFER_CLEAR_PREV(db) do {\
+    memset((db)->prev, 0, sizeof(double)*(db)->N);\
 } while (0)
 
 /** @fn initDoubleBuffer(DoubleBuffer* db, int64_t n_elements)
  * @brief init the memory associateds to the double buffer
  * @param db the double buffer to init
  * @param n_elements the number of elements for each buffer
- * @warning does NOT free the struct itself
+ * @warning Memory is not cleared on init. Use `DOUBLE_BUFFER_CLEAR_NEXT` and `DOUBLE_BUFFER_CLEAR_PREV`
  */
 void initDoubleBuffer(DoubleBuffer* db, const size_t n_elements);
 
@@ -46,7 +58,7 @@ void initDoubleBuffer(DoubleBuffer* db, const size_t n_elements);
  * @param db the double buffer to free
  * @warning does NOT free the struct itself
  */
-void freeDoubleBuffer(const DoubleBuffer* db);
+void freeDoubleBuffer(DoubleBuffer* db);
 
 
 
@@ -62,13 +74,14 @@ typedef struct CyclicBuffer {
 } CyclicBuffer;
 
 /**
- *@brief Push a new element in the buffer. If the buffer is full, the oldest item is replaced
+ *@brief Push a new element into the buffer. If the buffer is full, the oldest item is replaced
  * @param cb The pointer to the CyclicBuffer where to push the element
  * @param e the element to push
  * @warning As the oldest element is replaced, there is not garantee that latest element is the last one
  */
 #define CYCLIC_BUFFER_PUSH(cb, e) do { \
     (cb)->data[ (cb)->i % (cb)->capacity] = e; \
+    (cb)->i++; \
 } while (0)
 
 
