@@ -296,10 +296,6 @@ int main(void) {
         } else {
             double propE, propVar;
             computeAveStd(vmcd->Eb->data, vmcd->Eb->capacity, &propE, &propVar);
-            if (propVar<0) {
-                fflush(stdout);
-                printf("T.T");
-            }
             double deltaE = propE-aveE[a-1];
 
             const double r = rand()*RAND_MAX_i;
