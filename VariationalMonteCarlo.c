@@ -37,12 +37,12 @@ typedef struct VMCdata {
 
 void initPositionsOnGrid(const VMCdata* vmcd) {
     const double L = vmcd->L;
-    const double cbrN = pow( (double) vmcd->Np, 1./3.); // CuBicRoot(N)
+    const double cbrN = ceil(pow( (double) vmcd->Np, 1./3.)); // CuBicRoot(N)
     size_t i = 0;
 
-    for(size_t x=1; x<cbrN+1; x++) {
-        for(size_t y=1; y<cbrN+1; y++) {
-            for(size_t z=1; z<cbrN+1; z++) {
+    for(size_t x=0; x<cbrN; x++) {
+        for(size_t y=0; y<cbrN; y++) {
+            for(size_t z=0; z<cbrN; z++) {
                 if(i>=vmcd->Np)
                     break;
                 vmcd->coord->next[3*i+0] = L*(x/cbrN-0.5);
@@ -58,20 +58,21 @@ void diffuseWithImportanceSampling(const VMCdata* vmcd) {
     /* NOTE:
      *  McMillan et al. use a simple diffusion, while this implementation uses Importance Sampling. The formula relation
      *  for importance sampling is
-     *        $\mathbf{r}_{new} = \mathbf{r}_{old} + \Xi + D \mathbf{F}(\mathbf{r}_{old}) \delta t$
+     *        $\mathbf{r}_{new} = \mathbf{r}_{old} + \Xi + D \delta t \mathbf{F}(\mathbf{r}_{old})$
      *     with:
      *        $\Xi$ Normal distributed with mean 0 and variance $2D\delta t$.
      *        $\mathbf{F}(\mathbf{r}_{old})= \frac{1}{f} \nabla f$ drift velocity
      *  source https://compphysics.github.io/ComputationalPhysics2/doc/LectureNotes/_build/html/vmcdmc.html#importance-sampling
      *      (actually, the 2010 version of the book, but the link should provide the same info)
      *
-     *  From the McMillan paper, we know that $\sigma=L/2$, therefore $2 D \delta t = L^2/4 \implies D \delta t = L^2/8$.
+     *  $\sigma=$ is tuned at runtime. We have that $2 D \delta t = \sigma^2 \implies D \delta t = \sigma^2 /2$.
      *  This substitution allows us to ignore the exact value of $D$ and $\delta t$ as long as their product is constant.
      */
+    //const double sqrt3i = 0.57735026919; // sqrt(1/3); The variance of \vec{R} is one, we sample one component at a time
     const double L = vmcd->L;
     const double deltaR = vmcd->deltaR;
     const double Ddt = deltaR*deltaR/2.;
-    const double sqrt3i = 0.57735026919; // sqrt(1/3); The variance of \vec{R} is one, we sample one component at a time
+
 
     memset(vmcd->F, 0, 3*vmcd->Np*sizeof(double)); // Clear buffer for accumulation
 
@@ -102,7 +103,7 @@ void diffuseWithImportanceSampling(const VMCdata* vmcd) {
             const double f   =  WU_FEENBERG_TPWF(r, vmcd->a1, vmcd->a2);
             const double df  = dWU_FEENBERG_TPWF(r, vmcd->a1, vmcd->a2);  // (df/dr)
 
-            const double F = 1./r * df/f; // Auxiliary constant for the drift velocity in radial coordinates over the distance
+            const double F = 2./r * df/f; // Auxiliary constant for the drift velocity in radial coordinates over the distance
             const double Fx = F*dx;
             const double Fy = F*dy;
             const double Fz = F*dz;
@@ -119,9 +120,9 @@ void diffuseWithImportanceSampling(const VMCdata* vmcd) {
         }
         // By the end ot the p2 cycle, all the accumulation over p1 is done. So I can compute the new position
         //          n_new = x_old + Xi + (D*\delta t)*F(r_old) [old + gaussian drift + drift velocity]
-        double xn = x1 + sqrt3i * randn()*deltaR + Ddt*vmcd->F[3*p1+0];
-        double yn = y1 + sqrt3i * randn()*deltaR + Ddt*vmcd->F[3*p1+1];
-        double zn = z1 + sqrt3i * randn()*deltaR + Ddt*vmcd->F[3*p1+2];
+        double xn = x1 + /*sqrt3i */ randn()*deltaR + Ddt*vmcd->F[3*p1+0];
+        double yn = y1 + /*sqrt3i */ randn()*deltaR + Ddt*vmcd->F[3*p1+1];
+        double zn = z1 + /*sqrt3i */ randn()*deltaR + Ddt*vmcd->F[3*p1+2];
 
         // Impose PCB on new positions
         xn -= L * round(xn/L);
@@ -153,8 +154,9 @@ double computeEnergy(const VMCdata* vmcd) {
             const double ddf = ddWU_FEENBERG_TPWF(r, vmcd->a1, vmcd->a2);   // (ddf/dr2)
             const double dfof = df/f;
 
-            const double hbar2_2me = 6.06233735;
-            El += - hbar2_2me*( ddf/f - (dfof)*(dfof) + 2/r * dfof ) + LJ_potential(r);
+            const double hbar2_2me = -6.06233735; // [Kelvin * Angstrom^2]
+
+            El += hbar2_2me*( ddf/f - (dfof)*(dfof) + 2/r * dfof ) + LJ_potential(r);
         }
     }
 
@@ -184,7 +186,11 @@ double computeLogPsi2(const VMCdata* vmcd) {
 
 
 
-int main(void) {
+int main(int argc, char** argv) {
+    if (argc != 4) {
+        printf("Usage %s [a1] [a2] [Np]\n", argv[0]);
+        exit(-1);
+    }
     srand( (unsigned int) time(NULL) );
     const double RAND_MAX_i = 1. / ( (double) RAND_MAX );
 
@@ -192,57 +198,67 @@ int main(void) {
     const double RHO = 0.02277696793; // Density from W. L. McMillan, Ground State of Liquid He⁴, Phys. Rev.138, A442 (1965)
 
     /// 1. Allocate resources
-    vmcd->Ntseq = 2048;                             // equilibration timesteps
-    vmcd->Nts = 4096;                               // run timesteps
-    vmcd->decTs = 64;                              // decorrelation timesteps
+    vmcd->Ntseq = 2*4096;                             // equilibration timesteps
+    vmcd->Nts = 4*4096;                               // run timesteps
+    vmcd->decTs = 256;                              // decorrelation timesteps
+    const int acc_step = 512;
 
-    vmcd->Np = 200;                                 // 200 Helium atoms
+    vmcd->Np = (size_t) atoi(argv[3]); //200;                                 // 200 Helium atoms
     vmcd->L = pow(vmcd->Np/RHO, 1./3.);             // Box size constructed to have the same density as in the paper
 
-    vmcd->a1 = 2.51;                                // Initial conditions for density in W. L. McMillan, Ground State
-    vmcd->a2 = 5;                                   // of Liquid He⁴, Phys. Rev.138, A442 (1965)
+    vmcd->a1 = atof(argv[1]); //2.51;                                // Initial conditions for density in W. L. McMillan, Ground State
+    vmcd->a2 = atof(argv[2]); //5;                                   // of Liquid He⁴, Phys. Rev.138, A442 (1965)
     vmcd->deltaR = 0.16;                             // Initial esteem for MC step displacement
 
     vmcd->Eb = malloc( sizeof(CyclicBuffer));   // Average over the last 2048 values of the energy
-    initCyclicBuffer(vmcd->Eb, vmcd->Nts/vmcd->decTs);
+    initCyclicBuffer(vmcd->Eb, vmcd->Nts/vmcd->decTs-10);
 
-    // 2. Generate positions
+    // 2. Init positions
     vmcd->coord = malloc(sizeof(DoubleBuffer));         // Double buffer for R_old and R_new
     initDoubleBuffer( vmcd->coord, 3*vmcd->Np);
-    initPositionsOnGrid(vmcd);                              // Distribute particle on a Grid
 
-    // 2.1 Compute pairwise distances
+    // 2.1 Init pairwise distances
     const size_t Npairs = vmcd->Np*(vmcd->Np-1)/2;
     vmcd->pair_r = malloc( sizeof(double)* Npairs);
-    computePairwiseDistancesWithPCB(vmcd->coord->next, vmcd->Np, vmcd->L, vmcd->pair_r);
 
     // 2.2 Init drift velocity
     vmcd->F = malloc(sizeof(double)*3*vmcd->Np);        // Drift velocity
 
-    // 2.3 Compute energy for the initial configuration
-    vmcd->logPsi2 = computeLogPsi2(vmcd);   // Compute initial Log probability
-
-    // 2.4 Move coordinates from R_new to R_old
-    DOUBLE_BUFFER_NEXT_STEP(vmcd->coord);
 
     // 2.3 Init arrays for the MC of the parameters
     double* a1   = malloc(sizeof(double)*2048);
     double* a2   = malloc(sizeof(double)*2048);
     double* aveE = malloc(sizeof(double)*2048);
     double* varE = malloc(sizeof(double)*2048);
+    double deltaA1 = 0.01; //0.1;
+    double deltaA2 = 0.01; //0.1;
+    //size_t accA1 = 0;
+    //size_t accA2 = 0;
 
     // 3. Main loop of the VMC
     clock_t begin = clock();
-    FILE* f = fopen("../VMC_parameters.txt", "w");
+    char* filename = malloc(256);
+    sprintf(filename, "np%zu_a1%.2lf_a2%.2f.csv", vmcd->Np, vmcd->a1, vmcd->a2);
+    FILE* f = fopen(filename, "w");
+    fprintf(f, "aveE, varE, a1, a2\n");
+
+    vmcd->deltaR = 0.1;
+
 
     // Monte Carlo loop for a1 e a2
-    for(size_t a=0; a<2048; a++) {
-        printf("[%4zu/2048] {%.2lf, %.2lf}\t", a, vmcd->a1, vmcd->a2);
+    for(size_t a=0; a<256; a++) {
+        printf("[%4zu/256] {%.2lf, %.2lf} ", a, vmcd->a1, vmcd->a2);
+
+        initPositionsOnGrid(vmcd);                              // Distribute particle on a Grid
+        computePairwiseDistancesWithPCB(vmcd->coord->next, vmcd->Np, vmcd->L, vmcd->pair_r);
+        vmcd->logPsi2 = computeLogPsi2(vmcd);   // Compute initial Log probability
+        DOUBLE_BUFFER_NEXT_STEP(vmcd->coord); // 2.4 Move coordinates from R_new to R_old
+
 
         // Equilibration
         size_t accepted_moves = 0;
-        printf("(dR, a)\t");
-        for(size_t t=0; t<vmcd->Ntseq*(a==0 ? 2 : 1); t++) {
+        //printf("(dR, a)\t");
+        for(size_t t=0; t<vmcd->Ntseq; t++) {
             diffuseWithImportanceSampling(vmcd);
             computePairwiseDistancesWithPCB(vmcd->coord->next, vmcd->Np, vmcd->L, vmcd->pair_r);
 
@@ -256,13 +272,13 @@ int main(void) {
             }
 
             // Adapt deltaR to have an acceptance of ~50% every acc_step.
-            const int acc_step = 512;
             if( (t+1)%acc_step==0) {
                 double acc = (double) accepted_moves/ (double) acc_step;
                 const double acc_target = 0.5;
 
-                printf("(%lf, %.1lf%%)\t", vmcd->deltaR/vmcd->L, 100*acc);
-                vmcd->deltaR *= 1.0 + 0.3*(acc-acc_target);
+                //printf("(%.0e, %3.0lf%%)\t", vmcd->deltaR/vmcd->L, 100*acc);
+                printf("%3.0lf%% ", 100*acc);
+                vmcd->deltaR *= 1.0 + 0.5*(acc-acc_target);
                 accepted_moves = 0;
             }
         }
@@ -292,19 +308,20 @@ int main(void) {
             a1[a] = vmcd->a1;
             a2[a] = vmcd->a2;
             computeAveStd(vmcd->Eb->data, vmcd->Eb->capacity, &(aveE[a]), &(varE[a]));
-            printf("|\taveE=%.2e, varE=%.2e\n", aveE[a], varE[a]);
+            printf("|\taveE=%.2e, varE=%8.2e\n", aveE[a], varE[a]);
         } else {
             double propE, propVar;
             computeAveStd(vmcd->Eb->data, vmcd->Eb->capacity, &propE, &propVar);
             double deltaE = propE-aveE[a-1];
 
             const double r = rand()*RAND_MAX_i;
-            printf("|\t<E>=%+5.2e | varE=%+5.2e | dE=%+5.2e -> P=%+5.2e", propE, propVar, deltaE, exp(-deltaE));
+            printf("|\t<E>=%+5.2e\t| stdE=%+5.2e\t| dE=%+5.2e -> P=%+5.2e", propE, sqrt(propVar), deltaE, exp(-deltaE));
 
             if (r<= exp(-deltaE) ) {
                 aveE[a] = propE;
                 varE[a] = propVar;
                 printf("\t[ACCEPTED]");
+                //(a%2==0) ? accA1++ : accA2++;
             } else {
                 // Revert changes of Last Monte Carlo move
                 vmcd->a1 = a1[a-1];
@@ -316,12 +333,24 @@ int main(void) {
             a1[a] = vmcd->a1;
             a2[a] = vmcd->a2;
 
-            printf("\t %zu steps in %lfs (%lfms/iter)\n", vmcd->Nts+vmcd->Ntseq, time_spent, 1000*time_spent/(vmcd->Nts+vmcd->Ntseq));
+            printf("\t %zu steps in %lfs (%lfms/iter)\t", vmcd->Nts+vmcd->Ntseq, time_spent, 1000*time_spent/(vmcd->Nts+vmcd->Ntseq));
         }
 
-        fprintf(f, "%.12lf, %.12lf, %.6lf, %.6lf\n", aveE[a], varE[a], a1[a], a2[a]);
-        vmcd->a1 += 0.1*randn();
-        vmcd->a2 += 0.1*randn();
+        fprintf(f, "%.8e, %.8e, %.6lf, %.6lf\n", aveE[a], varE[a], a1[a], a2[a]);
+        if (a%2 == 0) {
+            //double accA1_ =  2.*accA1/(a+1.);
+            //deltaA1 *= 1.0 + 0.5*(accA1_-0.5);
+            vmcd->a1 += deltaA1*randn();
+            //vmcd->a1 = fmax(vmcd->a1, 0.005);
+            //printf(" | dA1=%.0e accA1=%3.0lf%%\t", deltaA1, 100*accA1_);
+        } else {
+            //double accA2_ =  2.*accA2/(a+1.);
+            //deltaA2 *= 1.0 + 0.5*(accA2_-0.5);
+            vmcd->a2 += deltaA2*randn();
+            //vmcd->a2 = fmax(vmcd->a2, 0.005);
+            //printf(" | dA2=%.0e accA2=%3.0lf%%\t", deltaA2, 100*accA2_);
+        }
+        printf("\n");
 
         begin = clock();
     }
