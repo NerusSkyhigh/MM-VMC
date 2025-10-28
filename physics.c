@@ -68,12 +68,12 @@ double logWU_FEENBERG_TPWF(const double r, const double a1, const double a2) {
 
 double dWU_FEENBERG_TPWF(const double r, const double a1, const double a2) {
     const double t = pow(a1/r, a2);
-    return (a2/r)*t*exp(t);
+    return (a2/r)*t*exp(-t);
 }
 
 double logdWU_FEENBERG_TPWF(const double r, const double a1, const double a2) {
     const double t = pow(a1/r, a2);
-    return log(a2/r*t)+t;
+    return log(a2/r*t)-t;
 }
 
 
