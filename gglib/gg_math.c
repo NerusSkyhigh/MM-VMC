@@ -4,9 +4,6 @@
 
 #include <stdbool.h>
 #include <stdlib.h>
-#include <math.h>
-#include <stddef.h>
-#include <stdio.h>
 
 #include "gg_math.h"
 
