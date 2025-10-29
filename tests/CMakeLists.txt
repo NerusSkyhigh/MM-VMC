@@ -1,0 +1,50 @@
+project(Google_tests
+        CXX
+        CUDA
+)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+include(FetchContent)
+FetchContent_Declare(googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG main
+)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(googletest)
+
+enable_testing()
+
+
+# CPU tests
+add_executable(cpu_tests
+        test_gg_math.cpp
+        ${PROJECT_SOURCE_DIR}/../gglib/gg_math.c
+        ${PROJECT_SOURCE_DIR}/../gglib/gg_mem.c
+        ${PROJECT_SOURCE_DIR}/../physics.c
+)
+target_include_directories(cpu_tests PRIVATE ${PROJECT_SOURCE_DIR}/../gglib)
+if (UNIX)
+    target_link_libraries(cpu_tests PRIVATE GTest::gtest_main m)
+else()
+    target_link_libraries(cpu_tests PRIVATE GTest::gtest_main)
+endif()
+include(GoogleTest)
+gtest_discover_tests(cpu_tests)
+
+
+# GPU tests (optional, only if CUDA available)
+find_package(CUDAToolkit)
+if(CUDAToolkit_FOUND)
+    enable_language(CUDA)
+    add_executable(gpu_tests
+            test_ggpu_math.cu
+            ${PROJECT_SOURCE_DIR}/../ggpulib/gg_math.cu
+            ${PROJECT_SOURCE_DIR}/../gglib/gg_math.c
+    )
+    set_target_properties(gpu_tests PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_include_directories(gpu_tests PRIVATE ${PROJECT_SOURCE_DIR}/../ggpulib)
+    target_link_libraries(gpu_tests PRIVATE GTest::gtest_main CUDA::cudart)
+    gtest_discover_tests(gpu_tests)
+endif()

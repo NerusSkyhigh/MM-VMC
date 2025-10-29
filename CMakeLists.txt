@@ -1,9 +1,15 @@
 cmake_minimum_required(VERSION 3.10)
-project(QMC C)
+project(QMC
+        C
+        CUDA
+)
 
 set(CMAKE_C_STANDARD 11)
-SET(CMAKE_C_FLAGS_DISTRIBUTION "-O3")
-SET(CMAKE_C_FLAGS "-pedantic -Wall -Wextra -Wconversion")
+set(CMAKE_C_FLAGS_DISTRIBUTION "-O3")
+if (UNIX)
+    set(CMAKE_C_FLAGS "-pedantic -Wall -Wextra -Wconversion")
+endif()
+
 
 
 add_executable(QMC DiffusionMonteCarlo.c
@@ -23,3 +29,5 @@ add_executable(VMC VariationalMonteCarlo.c
 target_link_libraries(VMC
         m
 )
+
+add_subdirectory(tests)
