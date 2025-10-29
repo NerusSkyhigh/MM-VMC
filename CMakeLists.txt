@@ -30,4 +30,10 @@ target_link_libraries(VMC
         m
 )
 
+#add_executable(gpuVMC VariationalMonteCarlo.cu
+#        ggpulib/gg_math.cuh
+#        ggpulib/gg_math.cu
+#        physics.c
+#)
+
 add_subdirectory(tests)
