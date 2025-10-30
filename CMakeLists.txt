@@ -41,6 +41,11 @@ add_executable(gpuVMC VariationalMonteCarlo.cu
         ggpulib/gg_mem.cu
         ggpulib/gg_mem.cuh
         ggpulib/gg_cuda_macro.cuh
+
+        gglib/gg_math.h
+        gglib/gg_math.c
+        gglib/gg_mem.c
+        gglib/gg_mem.h
         physics.cuh
 )
 
