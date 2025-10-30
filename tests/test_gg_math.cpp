@@ -18,7 +18,7 @@ TEST(GgMathTest, computeAveStd_sinx) {
     }
 
     double mean, var;
-    computeAveStd(sinx.data(), sinx.size(), &mean, &var);
+    computeAveVar(sinx.data(), sinx.size(), &mean, &var);
 
     EXPECT_NEAR(mean, 0.0, 1e-12);
     EXPECT_NEAR(var, 0.5, 1e-12);
@@ -33,7 +33,7 @@ TEST(GgMathTest, randn_checkMeanAndVar) {
         samples[i] = randn();
     }
     double mean, var;
-    computeAveStd(samples.data(), n_samples, &mean, &var);
+    computeAveVar(samples.data(), n_samples, &mean, &var);
     EXPECT_NEAR(mean, 0.0, 0.05);     // Should be near 0
     EXPECT_NEAR(var, 1.0, 0.05);      // Should be near 1
 }

@@ -34,7 +34,7 @@ double randn(void) {
 }
 
 
-void computeAveStd(const double* v, size_t size, double* mean, double* var) {
+void computeAveVar(const double* v, size_t size, double* mean, double* var) {
     double x = 0;
     double x2 = 0;
 
@@ -44,6 +44,18 @@ void computeAveStd(const double* v, size_t size, double* mean, double* var) {
     }
     *mean = x / (double) size;
     *var = (x2/ (double) size) - (*mean) * (*mean);
+}
+
+void computeAveVarf(const float* v, size_t size, float* mean, float* var) {
+    float x = 0;
+    float x2 = 0;
+
+    for (size_t i = 0; i < size; i++) {
+        x  += v[i];
+        x2 += v[i] * v[i];
+    }
+    *mean = x / (float) size;
+    *var = (x2/ (float) size) - (*mean) * (*mean);
 }
 
 

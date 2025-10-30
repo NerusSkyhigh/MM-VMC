@@ -307,11 +307,11 @@ int main(int argc, char** argv) {
         if(a==0) {
             a1[a] = vmcd->a1;
             a2[a] = vmcd->a2;
-            computeAveStd(vmcd->Eb->data, vmcd->Eb->capacity, &(aveE[a]), &(varE[a]));
+            computeAveVar(vmcd->Eb->data, vmcd->Eb->capacity, &(aveE[a]), &(varE[a]));
             printf("|\taveE=%.2e, varE=%8.2e\n", aveE[a], varE[a]);
         } else {
             double propE, propVar;
-            computeAveStd(vmcd->Eb->data, vmcd->Eb->capacity, &propE, &propVar);
+            computeAveVar(vmcd->Eb->data, vmcd->Eb->capacity, &propE, &propVar);
             double deltaE = propE-aveE[a-1];
 
             const double r = rand()*RAND_MAX_i;
