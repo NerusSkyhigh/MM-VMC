@@ -1,60 +1,114 @@
-// VariationalMonteCarlo.c
+// VariationalMonteCarlo.cu
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-#include <time.h>
-#include <string.h>
 
-#include "gglib/gg_math.h"
-#include "gglib/gg_mem.h"
-#include "physics.h"
+#include <curand_kernel.h>
+#include <cub/cub.cuh>
+
+#include "ggpulib/gg_math.cuh"
+#include "ggpulib/gg_mem.cuh"
+
+#include "physics.cuh"
 
 
 typedef struct VMCdata {
-    size_t Np;              // Number of particles
+    // Properties of the system
+    unsigned int Np;              // Number of particles
+    float rho;
 
-    double logPsi2;         // <Psi|Psi> is proportional to probability P(R)
-    double El;              // current Local Energy
-    CyclicBuffer* Eb;       // Energy buffer where to accumulate energy
+    // Parameters of time evolution
+    unsigned int Ntseq;           // Number of timesteps for the equilibration
+    unsigned int Nts;             // total Number of TimeSteps
+    unsigned int decTs;           // Decorrelation timesteps (euristic)
 
+    // Simulation box
+    float L;               // Box is centered in 0 and has size L: [-L/2; L/2]
+
+    // Microscopic quantities
     DoubleBuffer* coord;    // Positions
-    double* pair_r;         // Pairwise distances
+    unsigned int* pairs;
+    float* dr;         // Pairwise distances
+    float* dxyz;           // Distances along one axis
+    float* F;              // Drift Velocity F
+    float* r_new;          // Buffer for the computation of the pariwise distance
 
-    double* F;              // Drift Velocity F
-    double* r_new;          // Buffer for the computation of the pariwise distance
+    // Macroscopic quantities
+    float* d_logPsi2;          // <Psi|Psi> is proportional to probability P(R)
+    float* v_logPsi2;       // Vector of the contribution to logPsi2
+    float h_logPsi2;
 
-    double deltaR;          // Esteem for the diplacement in the MC move
-    double a1;              // Parameters for the trial wf
-    double a2;
+    CyclicBuffer* Eb;       // Energy buffer where to accumulate energy
+    float* d_El;              // current Local Energy
+    float* v_El;
+    float h_El;
 
-    size_t Ntseq;           // Number of timesteps for the equilibration
-    size_t Nts;             // total Number of TimeSteps
-    size_t decTs;           // Decorrelation timesteps (euristic)
-    double L;               // Box is centered in 0 and has size L: [-L/2; L/2]
+    // Meta properties
+    curandState_t* rng_states;
+    float gamma;          // Esteem for the diplacement in the MC move
+    float a1;              // Parameters for the trial wf
+    float a2;
+
 } VMCdata;
 
 
+/**
+ * @brief Store the indices of the pairs in the vector provided.
+ * @param pairs Vector where to store the pairs linearly. Expected length is 2*n_particles*(n_particles-1)/2 = 2*n_pairs
+ * @param n_particles the number of particles
+ */
+__global__ void d_storePairs(unsigned int* pairs, const unsigned int n_particles) {
+    unsigned int tid = blockIdx.x*blockDim.x + threadIdx.x;
 
-void initPositionsOnGrid(const VMCdata* vmcd) {
-    const double L = vmcd->L;
-    const double cbrN = ceil(pow( (double) vmcd->Np, 1./3.)); // CuBicRoot(N)
-    size_t i = 0;
+    if (tid < n_particles*(n_particles-1)/2) {
+        // n_particles > p1 > p2 > 0
+        const unsigned int p1 = (unsigned int) floorf( (1+sqrtf(1+8*tid))/2 );
+        const unsigned int p2 = tid - p1*(p1-1)/2;
 
-    for(size_t x=0; x<cbrN; x++) {
-        for(size_t y=0; y<cbrN; y++) {
-            for(size_t z=0; z<cbrN; z++) {
-                if(i>=vmcd->Np)
-                    break;
-                vmcd->coord->next[3*i+0] = L*(x/cbrN-0.5);
-                vmcd->coord->next[3*i+1] = L*(y/cbrN-0.5);
-                vmcd->coord->next[3*i+2] = L*(z/cbrN-0.5);
-                i++;
-            }
-        }
+        pairs[2*tid+0] = p1;
+        pairs[2*tid+1] = p2;
     }
 }
 
-void diffuseWithImportanceSampling(const VMCdata* vmcd) {
+__global__ void d_initPositionsOnCube(float* coordinates, unsigned int n_particles, float L) {
+    unsigned int tid = blockIdx.x*blockDim.x+threadIdx.x;
+
+    if (tid < n_particles) {
+        // [MINOR TODO] If this function become hot I could micro-optimize it by computing
+        // the two constant on the CPU. They have the same values in all the kernel calls.
+        const unsigned int ns = (unsigned int) ceilf( powf(n_particles, 1.f/3.f) );
+        const float step = L/ns;
+
+        // x changes faster than y, which changes faster than z
+        const unsigned int xid = tid % ns;
+        const unsigned int yid = (tid / ns) % ns;
+        const unsigned int zid = tid / (ns*ns);
+
+        coordinates[3*tid+0] = xid*step - L/2.f; //+ origin[0];
+        coordinates[3*tid+1] = yid*step - L/2.f; //+ origin[1];
+        coordinates[3*tid+2] = zid*step - L/2.f; // + origin[2];
+    }
+}
+
+/**
+ * @brief Fill a vector with the contribution to logPsi2 for each pair
+ * @param dr distances between pair of particles
+ * @param n_pairs the number of pairs
+ * @param a1 variational coefficient 1
+ * @param a2 variational coefficient 2
+ * @param v_logPsi2 vector of size `n_pairs` that will store the contributions
+ * @warning This function assumes a bosonic system with single wave function given by `WU_FEENBERG_TPWF`.
+ */
+__global__ void d_computeLogPsi2(float* dr, unsigned int n_pairs, float a1, float a2, float* v_logPsi2) {
+    unsigned int tid = blockIdx.x*blockDim.x+threadIdx.x;
+
+    if (tid < n_pairs) {
+        v_logPsi2[tid] = 2.f * logWU_FEENBERG_TPWF(dr[tid], a1, a2);
+    }
+}
+
+
+__global__ void d_computeQuantumForce(const float a1, const float a2, unsigned int* pairs, unsigned int n_pairs, float* dxyz, float* dr, float* F) {
     /* NOTE:
      *  McMillan et al. use a simple diffusion, while this implementation uses Importance Sampling. The formula relation
      *  for importance sampling is
@@ -68,120 +122,106 @@ void diffuseWithImportanceSampling(const VMCdata* vmcd) {
      *  $\sigma=$ is tuned at runtime. We have that $2 D \delta t = \sigma^2 \implies D \delta t = \sigma^2 /2$.
      *  This substitution allows us to ignore the exact value of $D$ and $\delta t$ as long as their product is constant.
      */
-    //const double sqrt3i = 0.57735026919; // sqrt(1/3); The variance of \vec{R} is one, we sample one component at a time
-    const double L = vmcd->L;
-    const double deltaR = vmcd->deltaR;
-    const double Ddt = deltaR*deltaR/2.;
+    unsigned int tid = blockIdx.x*blockDim.x+threadIdx.x;
+
+    if (tid<n_pairs) {
+        const unsigned int p1 = pairs[2*tid];
+        const unsigned int p2 = pairs[2*tid+1];
+
+        const float dx = dxyz[3*tid+0];
+        const float dy = dxyz[3*tid+1];
+        const float dz = dxyz[3*tid+2];
+        const float r = dr[tid];
+
+        const float f   =  WU_FEENBERG_TPWF(r, a1, a2);
+        const float df  = dWU_FEENBERG_TPWF(r, a1, a2);  // (df/dr)
+
+        const float k = 2./r * df/f; // Auxiliary constant for the drift velocity in radial coordinates over the distance
+        const float Fx = k*dx;
+        const float Fy = k*dy;
+        const float Fz = k*dz;
+
+        // [TODO] Find a way to prevent these atomicAdds. They WILL slow down execution
+        // chatgpt suggests `use warp-level reductions per particle or shared-memory accumulation by block.`
+        // look into it
+
+        // p1
+        atomicAdd( &(F[3*p1+0]), Fx);
+        atomicAdd( &(F[3*p1+1]), Fy);
+        atomicAdd( &(F[3*p1+2]), Fz);
+
+        //p2
+        atomicAdd( &(F[3*p2+0]), -Fx);
+        atomicAdd( &(F[3*p2+1]), -Fy);
+        atomicAdd( &(F[3*p2+2]), -Fz);
+    }
+}
 
 
-    memset(vmcd->F, 0, 3*vmcd->Np*sizeof(double)); // Clear buffer for accumulation
 
-    for(size_t p1=0; p1<vmcd->Np; p1++) {
-        const double x1 = vmcd->coord->prev[3*p1+0];
-        const double y1 = vmcd->coord->prev[3*p1+1];
-        const double z1 = vmcd->coord->prev[3*p1+2];
+__global__ void d_diffuse(const float L, const float gamma, const unsigned int n_particles, float* prev_coord, float* F, curandState_t* states,
+                        float* next_coord) {
+    /* NOTE:
+     *  McMillan et al. use a simple diffusion, while this implementation uses Importance Sampling. The formula relation
+     *  for importance sampling is
+     *        $\mathbf{r}_{new} = \mathbf{r}_{old} + \Xi + D \delta t \mathbf{F}(\mathbf{r}_{old})$
+     *     with:
+     *        $\Xi$ Normal distributed with mean 0 and variance $2D\delta t$.
+     *        $\mathbf{F}(\mathbf{r}_{old})= \frac{1}{f} \nabla f$ drift velocity
+     *  source https://compphysics.github.io/ComputationalPhysics2/doc/LectureNotes/_build/html/vmcdmc.html#importance-sampling
+     *      (actually, the 2010 version of the book, but the link should provide the same info)
+     *
+     *  $\sigma=$ is tuned at runtime. We have that $2 D \delta t = \sigma^2 \implies D \delta t = \sigma^2 /2$.
+     *  This substitution allows us to ignore the exact value of $D$ and $\delta t$ as long as their product is constant.
+     */
 
-        for(size_t p2=p1+1; p2<vmcd->Np; p2++) {
-            const double x2 = vmcd->coord->prev[3*p2+0];
-            const double y2 = vmcd->coord->prev[3*p2+1];
-            const double z2 = vmcd->coord->prev[3*p2+2];
+    unsigned int tid = blockIdx.x*blockDim.x+threadIdx.x;
+    if(tid < n_particles) {
+        curandState_t localState = states[tid];
 
-            double dx = x1-x2;
-            double dy = y1-y2;
-            double dz = z1-z2;
+        const float Ddt = gamma*gamma/2.;
 
-            // PBC - Find minimal image;
-            // As I need dx, dy, dz (and the coordinates for later update) I can't simpy use the cached r here
-            dx -= L*round(dx/L);
-            dy -= L*round(dy/L);
-            dz -= L*round(dz/L);
+        const float x = prev_coord[3*tid+0];
+        const float y = prev_coord[3*tid+1];
+        const float z = prev_coord[3*tid+2];
 
-            // And, as I already have dx, dy, dz, computing the NORM is (probably) faster than searching for the element
-            // of vmcd->pair_r->next[r_idx];
-            const double r = NORM(dx,dy,dz);
-
-            const double f   =  WU_FEENBERG_TPWF(r, vmcd->a1, vmcd->a2);
-            const double df  = dWU_FEENBERG_TPWF(r, vmcd->a1, vmcd->a2);  // (df/dr)
-
-            const double F = 2./r * df/f; // Auxiliary constant for the drift velocity in radial coordinates over the distance
-            const double Fx = F*dx;
-            const double Fy = F*dy;
-            const double Fz = F*dz;
-
-            // p1
-            vmcd->F[3*p1+0] += Fx;
-            vmcd->F[3*p1+1] += Fy;
-            vmcd->F[3*p1+2] += Fz;
-
-            //p2
-            vmcd->F[3*p2+0] -= Fx;
-            vmcd->F[3*p2+1] -= Fy;
-            vmcd->F[3*p2+2] -= Fz;
-        }
         // By the end ot the p2 cycle, all the accumulation over p1 is done. So I can compute the new position
         //          n_new = x_old + Xi + (D*\delta t)*F(r_old) [old + gaussian drift + drift velocity]
-        double xn = x1 + /*sqrt3i */ randn()*deltaR + Ddt*vmcd->F[3*p1+0];
-        double yn = y1 + /*sqrt3i */ randn()*deltaR + Ddt*vmcd->F[3*p1+1];
-        double zn = z1 + /*sqrt3i */ randn()*deltaR + Ddt*vmcd->F[3*p1+2];
+        float xn = x + curand_normal(&localState)*gamma + Ddt*F[3*tid+0];
+        float yn = y + curand_normal(&localState)*gamma + Ddt*F[3*tid+1];
+        float zn = z + curand_normal(&localState)*gamma + Ddt*F[3*tid+2];
+        states[tid] = localState;
 
         // Impose PCB on new positions
-        xn -= L * round(xn/L);
-        yn -= L * round(yn/L);
-        zn -= L * round(zn/L);
+        xn -= L * nearbyintf(xn/L);
+        yn -= L * nearbyintf(yn/L);
+        zn -= L * nearbyintf(zn/L);
 
         // Update
-        vmcd->coord->next[3*p1+0] = xn;
-        vmcd->coord->next[3*p1+1] = yn;
-        vmcd->coord->next[3*p1+2] = zn;
+        next_coord[3*tid+0] = xn;
+        next_coord[3*tid+1] = yn;
+        next_coord[3*tid+2] = zn;
     }
 }
 
 /**
- * @brief Computes the energy from the distances stored in the vmcd->pair_r
- * @return Local energy of the configuration
+ * @brief Computes the energy from the distances stored in the vmcd->dr
  */
-double computeEnergy(const VMCdata* vmcd) {
-    double El = 0;
+__global__ void d_computeEnergy(unsigned int* pairs, unsigned int n_pairs, float* dr, const float a1, const float a2, float* v_energy) {
+    unsigned int tid = blockIdx.x*blockDim.x+threadIdx.x;
 
-    for (size_t p1=0; p1<vmcd->Np; p1++) {
-        for(size_t p2=p1+1; p2<vmcd->Np; p2++) {
+    if (tid<n_pairs) {
+        const float r = dr[tid];
 
-            const size_t r_idx = UTIDX(p1, p2, vmcd->Np);
-            const double r = vmcd->pair_r[r_idx];
+        const float f   =   WU_FEENBERG_TPWF(r, a1, a2);
+        const float df  =  dWU_FEENBERG_TPWF(r, a1, a2);   // (df/dr)
+        const float ddf = ddWU_FEENBERG_TPWF(r, a1, a2);   // (ddf/dr2)
+        const float dfof = df/f;
+        // [TODO] Transform this in constant expression
+        const float hbar2_2me = -6.06233735; // [Kelvin * Angstrom^2]
 
-            const double f   =   WU_FEENBERG_TPWF(r, vmcd->a1, vmcd->a2);
-            const double df  =  dWU_FEENBERG_TPWF(r, vmcd->a1, vmcd->a2);   // (df/dr)
-            const double ddf = ddWU_FEENBERG_TPWF(r, vmcd->a1, vmcd->a2);   // (ddf/dr2)
-            const double dfof = df/f;
-
-            const double hbar2_2me = -6.06233735; // [Kelvin * Angstrom^2]
-
-            El += hbar2_2me*( ddf/f - (dfof)*(dfof) + 2/r * dfof ) + LJ_potential(r);
-        }
+        v_energy[tid] = hbar2_2me*( ddf/f - (dfof)*(dfof) + 2.f/r * dfof ) + LJ_potential(r);
     }
-
-    return El;
-}
-
-/**
- * @brief Computes the wavefunciton squared from the distances stored in vmcd->pair_r
- * @return The logaritm of the wavefunction squared
- * @warning This function assumes a bosonic system with single wave function given by `WU_FEENBERG_TPWF`.
- */
-double computeLogPsi2(const VMCdata* vmcd) {
-    double logPsi = 0;
-
-    for (size_t p1=0; p1<vmcd->Np; p1++) {
-        for (size_t p2=p1+1; p2<vmcd->Np; p2++) {
-
-            const size_t r_idx = UTIDX(p1, p2, vmcd->Np);
-            const double r = vmcd->pair_r[r_idx];
-
-            const double logf = logWU_FEENBERG_TPWF(r, vmcd->a1, vmcd->a2);
-            logPsi += logf;
-        }
-    }
-    return 2.*logPsi;
 }
 
 
@@ -192,133 +232,122 @@ int main(int argc, char** argv) {
         exit(-1);
     }
 
-    srand( (unsigned int) time(NULL) );
-    const double RAND_MAX_i = 1. / ( (double) RAND_MAX );
+    double RAND_MAX_i = 1. / ( (double) RAND_MAX );
 
-    VMCdata* vmcd = malloc(sizeof(VMCdata));
-    const double RHO = 0.02277696793; // Density from W. L. McMillan, Ground State of Liquid He⁴, Phys. Rev.138, A442 (1965)
+    VMCdata* vmcd = (VMCdata*) malloc(sizeof(VMCdata));
 
-    /// 1. Allocate resources
+    // Properties of the system
+    vmcd->Np = 200;                                 // 200 Helium atoms
+    vmcd->rho = 0.02277696793f;                     // Density from W. L. McMillan, Ground State of Liquid He⁴, Phys. Rev.138, A442 (1965)
+
+
+    // Parameters of time evolution
     vmcd->Ntseq = 8192;                             // equilibration timesteps
     vmcd->Nts = 16384;                              // run timesteps
     vmcd->decTs = 256;                              // decorrelation timesteps
-    const int acc_step = 512;
 
-    vmcd->Np = (size_t) atoi(argv[3]); //200;                                 // 200 Helium atoms
-    vmcd->L = pow(vmcd->Np/RHO, 1./3.);             // Box size constructed to have the same density as in the paper
-
-    vmcd->a1 = atof(argv[1]); //2.51;                                // Initial conditions for density in W. L. McMillan, Ground State
-    vmcd->a2 = atof(argv[2]); //5;                                   // of Liquid He⁴, Phys. Rev.138, A442 (1965)
-    vmcd->deltaR = 0.16;                             // Initial esteem for MC step displacement
-
-    vmcd->Eb = malloc( sizeof(CyclicBuffer));   // Average over the last 2048 values of the energy
-    initCyclicBuffer(vmcd->Eb, vmcd->Nts/vmcd->decTs-10);
-
-    // 2. Init positions
-    vmcd->coord = malloc(sizeof(DoubleBuffer));         // Double buffer for R_old and R_new
-    initDoubleBuffer( vmcd->coord, 3*vmcd->Np);
-
-    // 2.1 Init pairwise distances
-    const size_t Npairs = vmcd->Np*(vmcd->Np-1)/2;
-    vmcd->pair_r = malloc( sizeof(double)* Npairs);
-
-    // 2.2 Init drift velocity
-    vmcd->F = malloc(sizeof(double)*3*vmcd->Np);        // Drift velocity
+    // Simulation box
+    vmcd->L = powf(vmcd->Np/vmcd->rho, 1./3.);        // Box size constructed to have the same density as in the paper
 
 
-    // 2.3 Init arrays for the MC of the parameters
-    double* aveE = malloc(sizeof(double)*2048);
-    double* varE = malloc(sizeof(double)*2048);
+    // [TODO] Move these quantities to the gpu
+    // Microscopic quantities
+    // -- Init positions --
+    vmcd->coord = (DoubleBuffer*) malloc(sizeof(DoubleBuffer));         // Double buffer for R_old and R_new
+    d_initDoubleBuffer(vmcd->coord, 3*vmcd->Np);
 
-    // 3. Main loop of the VMC
-    char* filename = malloc(256);
-    sprintf(filename, "np%zu_a1%.2lf_a2%.2f.csv", vmcd->Np, vmcd->a1, vmcd->a2);
-    FILE* f = fopen(filename, "w");
-    fprintf(f, "aveE, varE, a1, a2\n");
+    // -- Init pairwise distances --
+    const unsigned int n_pairs = vmcd->Np*(vmcd->Np-1)/2;
+    CUDA_CHECK( cudaMalloc(&(vmcd->pairs),  2*n_pairs*sizeof(unsigned int)) );
+    CUDA_CHECK( cudaMalloc(&(vmcd->dxyz),   3*n_pairs*sizeof(float)) );
+    CUDA_CHECK( cudaMalloc(&(vmcd->dr),     n_pairs*sizeof(float)) );
 
-    vmcd->deltaR = 0.1;
+    // -- Init drift velocity --
+    CUDA_CHECK( cudaMalloc(&(vmcd->F), 3*vmcd->Np*sizeof(float)) ); // Drift velocity
+
+    // Macroscopic quantities
+    // -- Init log WaveFunction --
+    CUDA_CHECK( cudaMalloc(&(vmcd->v_logPsi2), n_pairs*sizeof(float)) );
+    CUDA_CHECK( cudaMalloc(&(vmcd->d_logPsi2), sizeof(float)) );
+    float* h_proplogPsi2;
+
+    // -- Init Energy --
+    vmcd->Eb = (CyclicBuffer*) malloc( sizeof(CyclicBuffer));   // Average over the last 2048 values of the energy
+    d_initCyclicBuffer(vmcd->Eb, vmcd->Nts/vmcd->decTs );
+    CUDA_CHECK( cudaMalloc( &(vmcd->v_El), n_pairs*sizeof(float)));
+
+    // Meta properties
+    vmcd->a1 = 2.51;                                // Initial conditions for density in W. L. McMillan, Ground State
+    vmcd->a2 = 5;                                   // of Liquid He⁴, Phys. Rev.138, A442 (1965)
+    vmcd->gamma = 0.16;                            // Initial esteem for MC step displacement
+
+    CUDA_CHECK( cudaMalloc( &(vmcd->rng_states), vmcd->Np*sizeof(curandState_t) ) );
+
+    const int threads = 128;
+    const int blocks_particles = (vmcd->Np + threads - 1) / threads;
+    const int blocks_pairs = (n_pairs + threads - 1) / threads;
+
+    // Fill the values
+    setupRNG<<<blocks_particles, threads>>>(vmcd->rng_states, 0, vmcd->Np);
+
+    d_initPositionsOnCube<<<blocks_particles, threads>>>(vmcd->coord->next, vmcd->Np, vmcd->L);  // Distribute particle on a Grid
+    d_storePairs<<<blocks_pairs, threads>>>(vmcd->pairs, vmcd->Np);
+    cudaDeviceSynchronize(); // [MINOR TODO] I'm using the default stream so this is not essential.
+
+    // [TODO] Find correct parameters for this kernel execution
+    d_computePairwiseDistancesWithPCB<<<blocks_pairs, threads>>>(vmcd->coord->next, vmcd->pairs, vmcd->Np, vmcd->L, vmcd->dxyz, vmcd->dr);
+    d_computeLogPsi2<<<blocks_pairs, threads>>>(vmcd->dr, n_pairs, vmcd->a1, vmcd->a2, vmcd->v_logPsi2);
 
 
-    // Monte Carlo loop for a1 e a2
-    for(size_t a=0; a<256; a++) {
-        printf("[%4zu/256] {%.2lf, %.2lf} ", a, vmcd->a1, vmcd->a2);
-
-        initPositionsOnGrid(vmcd);                              // Distribute particle on a Grid
-        computePairwiseDistancesWithPCB(vmcd->coord->next, vmcd->Np, vmcd->L, vmcd->pair_r);
-        vmcd->logPsi2 = computeLogPsi2(vmcd);   // Compute initial Log probability
-        DOUBLE_BUFFER_NEXT_STEP(vmcd->coord); // 2.4 Move coordinates from R_new to R_old
+    DOUBLE_BUFFER_NEXT_STEP(vmcd->coord); // 2.4 Move coordinates from R_new to R_old
 
 
-        // Equilibration
-        size_t accepted_moves = 0;
-        //printf("(dR, a)\t");
-        for(size_t t=0; t<vmcd->Ntseq; t++) {
-            diffuseWithImportanceSampling(vmcd);
-            computePairwiseDistancesWithPCB(vmcd->coord->next, vmcd->Np, vmcd->L, vmcd->pair_r);
+    // Phase 1: Query how much temporary storage is needed. As the length of `vmcd->v_logPsi2` does not change, this
+    //          needs to be done only once.
+    void* d_temp_storage = nullptr;     // NULL pointer acts as a flag for `cub::DeviceReduce::Sum` to change the value
+    size_t temp_storage_bytes = 0;      // of `temp_storage_bytes` withouth computing anything
+    cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, vmcd->v_logPsi2, &(vmcd->d_logPsi2), n_pairs);
+    CUDA_CHECK( cudaMalloc(&d_temp_storage, temp_storage_bytes) );
+    // Phase 2: Actually perform the reduction
+    cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, vmcd->v_logPsi2, vmcd->d_logPsi2, n_pairs);
+    CUDA_CHECK( cudaMemcpy( &(vmcd->h_logPsi2),  vmcd->d_logPsi2,sizeof(float), cudaMemcpyDeviceToHost));
 
-            const double logPsi2 = computeLogPsi2(vmcd);
-            const double deltaLogPsi2 = logPsi2-vmcd->logPsi2;
-            const double logr = log(rand()*RAND_MAX_i);
-            if(logr <= deltaLogPsi2) {
-                accepted_moves++;                     // Monte Carlo move accepted
-                vmcd->logPsi2 = logPsi2;              // Copy the new probability
-                DOUBLE_BUFFER_NEXT_STEP(vmcd->coord); // Accept the new position
-            }
 
-            // Adapt deltaR to have an acceptance of ~50% every acc_step.
-            if( (t+1)%acc_step==0) {
-                double acc = (double) accepted_moves/ (double) acc_step;
-                const double acc_target = 0.5;
 
-                //printf("(%.0e, %3.0lf%%)\t", vmcd->deltaR/vmcd->L, 100*acc);
-                printf("%3.0lf%% ", 100*acc);
-                vmcd->deltaR *= 1.0 + 0.5*(acc-acc_target);
-                accepted_moves = 0;
-            }
+    // [TODO] Reintroduce `Equilibration` and adaptive step
+
+    // Monte Carlo loop for the WF
+    for(unsigned int t=0; t< vmcd->Nts; t++) {
+        CUDA_CHECK( cudaMemset(vmcd->F, 0, 3*vmcd->Np*sizeof(float)) ); // Clear buffer for accumulation
+        d_computeQuantumForce<<<blocks_particles, threads>>>(vmcd->a1, vmcd->a2, vmcd->pairs, n_pairs, vmcd->dxyz, vmcd->dr, vmcd->F);
+        d_diffuse<<<blocks_particles, threads>>>(vmcd->L, vmcd->gamma, vmcd->Np, vmcd->coord->prev, vmcd->F, vmcd->rng_states, vmcd->coord->next);
+
+        d_computePairwiseDistancesWithPCB<<<blocks_pairs, threads>>>(vmcd->coord->next, vmcd->pairs, vmcd->Np, vmcd->L, vmcd->dxyz, vmcd->dr);
+        d_computeLogPsi2<<<blocks_pairs, threads>>>(vmcd->dr, n_pairs, vmcd->a1, vmcd->a2, vmcd->v_logPsi2);
+        cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, vmcd->v_logPsi2, vmcd->d_logPsi2, n_pairs);
+        CUDA_CHECK( cudaMemcpy(h_proplogPsi2,  vmcd->d_logPsi2,sizeof(float), cudaMemcpyDeviceToHost));
+
+
+        const double deltaLogPsi2 = *h_proplogPsi2 - vmcd->h_logPsi2;
+        if( deltaLogPsi2>0 || logf(rand()*RAND_MAX_i)<= deltaLogPsi2) {
+            d_computeEnergy<<<blocks_pairs, threads>>>(vmcd->pairs, n_pairs, vmcd->dr, vmcd->a1, vmcd->a2, vmcd->v_El); // Compute new local energy
+            // As type and length of v_El is the same as v_logPsi2 I can use the same scratchpad
+            cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, vmcd->v_El, &(vmcd->d_El), n_pairs);
+            CUDA_CHECK( cudaMemcpy(&(vmcd->h_El), vmcd->d_El, sizeof(float), cudaMemcpyDeviceToHost) );
+
+            vmcd->h_logPsi2 = *h_proplogPsi2;                // Copy the new probability
+            DOUBLE_BUFFER_NEXT_STEP(vmcd->coord);   // Accept the new position
         }
-        vmcd->El = computeEnergy(vmcd);
-
-        // Monte Carlo loop for the WF
-        for(size_t t=0; t< vmcd->Nts; t++) {
-            diffuseWithImportanceSampling(vmcd);
-            computePairwiseDistancesWithPCB(vmcd->coord->next, vmcd->Np, vmcd->L, vmcd->pair_r);
-
-            const double logPsi2 = computeLogPsi2(vmcd);
-            const double deltaLogPsi2 = logPsi2-vmcd->logPsi2;
-            if( deltaLogPsi2>0 || log(rand()*RAND_MAX_i)<= deltaLogPsi2) {
-                vmcd->El = computeEnergy(vmcd);         // Compute new local energy
-                vmcd->logPsi2 = logPsi2;                // Copy the new probability
-                DOUBLE_BUFFER_NEXT_STEP(vmcd->coord);   // Accept the new position
-            }
-            if(t%vmcd->decTs == 0) {
-                // Decorrelate energy by placing only one sample per 128
-                CYCLIC_BUFFER_PUSH(vmcd->Eb, vmcd->El);
-            }
+        if(t%vmcd->decTs == 0) {
+            // Decorrelate energy by placing only one sample per 128
+            CYCLIC_BUFFER_PUSH(vmcd->Eb, vmcd->h_El);
         }
-
-        computeAveStd(vmcd->Eb->data, vmcd->Eb->capacity, &(aveE[a]), &(varE[a]));
-        printf("|\taveE=%.2e, varE=%8.2e\n", aveE[a], varE[a]);
-        printf("\t %zu steps in %lfs (%lfms/iter)\t", vmcd->Nts+vmcd->Ntseq, time_spent, 1000*time_spent/(vmcd->Nts+vmcd->Ntseq));
-
-        fprintf(f, "%.8e, %.8e, %.6lf, %.6lf\n", aveE[a], varE[a], a1[a], a2[a]);
-        printf("\n");
     }
 
-    fclose(f);
+    //computeAveStd(vmcd->Eb->data, vmcd->Eb->capacity, &(aveE[a]), &(varE[a]));
 
-    // [TODO] Free memory of all the structs
-    free(a1);
-    free(a2);
-    free(aveE);
-    free(varE);
-    free(vmcd->pair_r);
-    free(vmcd->F);
-    freeDoubleBuffer(vmcd->coord);
-    free(vmcd->coord);
-    freeCyclicBuffer(vmcd->Eb);
-    free(vmcd->Eb);
-    free(vmcd);
+
+    // [MAJOR TODO] Free memory of all the structs
 
     return 0;
 }
-

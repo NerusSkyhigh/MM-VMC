@@ -2,15 +2,17 @@
 // Created by Guglielmo Grillo on 17/10/25.
 //
 
+#include <curand_kernel.h>
+
 #include "gg_math.cuh"
 
-__global__ void d_computePairwiseDistancesWithPCB(const float* coordinates, const size_t* pairs,
-                                                  const size_t n_particles, const float L,
+__global__ void d_computePairwiseDistancesWithPCB(const float* coordinates, const unsigned int* pairs,
+                                                  const unsigned int n_particles, const float L,
                                                   float* dxyz, float* r_utb) {
-    size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid < n_particles*(n_particles-1)/2) {
-        size_t p1 = pairs[2*tid];
-        size_t p2 = pairs[2*tid + 1];
+        unsigned int p1 = pairs[2*tid];
+        unsigned int p2 = pairs[2*tid + 1];
 
         const float x1 = coordinates[3*p1];
         const float y1 = coordinates[3*p1+1];
@@ -33,5 +35,13 @@ __global__ void d_computePairwiseDistancesWithPCB(const float* coordinates, cons
         dxyz[3*tid+1] = dy;
         dxyz[3*tid+2] = dz;
         r_utb[tid] = NORM(dx,dy,dz);
+    }
+}
+
+
+__global__ void setupRNG(curandState_t* states, unsigned long long seed, int n_seeds) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid < n_seeds) {
+        curand_init(seed, tid, 0, &states[tid]);
     }
 }

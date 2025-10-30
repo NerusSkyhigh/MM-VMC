@@ -25,6 +25,15 @@
  * @param dxyz Upper Triangular Buffer where to store the distances along the axis. p1 major, Expected length: 3*(n_particles)*(n_particles-1)/2
  * @param r_utb Upper Triangular Buffer where to store the distances. p1 major, Expected length: (n_particles)*(n_particles-1)/2
  */
-__global__ void d_computePairwiseDistancesWithPCB(const float* coordinates, const size_t* pairs,
-                                                  size_t n_particles, float L,
+__global__ void d_computePairwiseDistancesWithPCB(const float* coordinates, const unsigned int* pairs,
+                                                  unsigned int n_particles, float L,
                                                   float* dxyz, float* r_utb);
+
+
+/**
+ * @brief Prepares an array of random states
+ * @param states an array of `curandState_t` of size n_seeds
+ * @param seed the initial seed
+ * @param n_seeds the number of states to initialize
+ */
+__global__ void setupRNG(curandState_t* states, unsigned long long seed, int n_seeds);
