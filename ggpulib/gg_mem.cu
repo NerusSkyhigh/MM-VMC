@@ -25,6 +25,12 @@ void d_initCyclicBuffer(CyclicBuffer* cb, const unsigned int capacity) {
     cb->i = 0;
 }
 
+void h_initCyclicBuffer(CyclicBuffer* cb, const unsigned int capacity) {
+    cb->capacity = capacity;
+    cb->data = (float*) malloc(capacity*sizeof(float));
+    cb->i = 0;
+}
+
 void d_freeCyclicBuffer(CyclicBuffer* cb) {
     CUDA_CHECK( cudaFree(cb->data) );
     cb->capacity = 0;

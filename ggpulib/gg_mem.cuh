@@ -93,6 +93,7 @@ typedef struct CyclicBuffer {
  * @param capacity the capacity of the buffer
  */
 void d_initCyclicBuffer(CyclicBuffer* cb, const unsigned int capacity);
+void h_initCyclicBuffer(CyclicBuffer* cb, const unsigned int capacity);
 
 /** @fn freeCyclicBuffer(DoubleBuffer* dba)
  * @brief frees the memory associateds to the cyclic buffer
