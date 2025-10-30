@@ -30,8 +30,9 @@ double randn(void);
  * @param mean where to save the mean computed
  * @param var where to save the variance computed as $<v^2>-<v>^2$
  */
-void computeAveStd(const double* v, size_t size, double* mean, double* var);
+void computeAveVar(const double* v, size_t size, double* mean, double* var);
 
+void computeAveVarf(const float* v, size_t size, float* mean, float* var);
 
 /** @fn UPPER_TRIANGULAR_INDEX
  * @brief UPPER_TRIANGULAR_INDEX computes the linear index for an upper triangular scheme. p1-major
