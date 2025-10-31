@@ -48,6 +48,8 @@ add_executable(gpuVMC VariationalMonteCarlo.cu
         gglib/gg_mem.c
         gglib/gg_mem.h
         physics.cuh
+        gglib/gg_io.c
+        gglib/gg_io.h
 )
 set_target_properties(gpuVMC PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
