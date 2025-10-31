@@ -1,13 +1,13 @@
 cmake_minimum_required(VERSION 3.10)
+set(CMAKE_CUDA_ARCHITECTURES 75 80 86) # 75 (Pascal), 80 (Ampere), 86 (Ampere+)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_FLAGS_DISTRIBUTION "-O3")
+set(CMAKE_CXX_STANDARD 17)
+
 project(QMC
         C
         CUDA
 )
-
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_FLAGS_DISTRIBUTION "-O3")
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CUDA_ARCHITECTURES 80 86) # 80 (Ampere), 86 (Ampere+)
 
 if (UNIX)
     set(CMAKE_C_FLAGS "-pedantic -Wall -Wextra -Wconversion")
