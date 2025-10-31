@@ -9,6 +9,7 @@
 #include "ggpulib/gg_mem.cuh"
 extern "C" {
     #include "gglib/gg_math.h"
+    #include "gglib/gg_io.h"
 }
 
 #include "physics.cuh"
@@ -23,12 +24,14 @@ typedef struct VMCdata {
     unsigned int Ntseq;           // Number of timesteps for the equilibration
     unsigned int Nts;             // total Number of TimeSteps
     unsigned int decTs;           // Decorrelation timesteps (euristic)
+    unsigned int acc_steps;       // Number of steps to sample to adapt the value of gamma
 
     // Simulation box
     float L;               // Box is centered in 0 and has size L: [-L/2; L/2]
 
     // Microscopic quantities
     DoubleBuffer* coord;    // Positions
+    float* h_coord;
     unsigned int* pairs;
     float* dr;         // Pairwise distances
     float* dxyz;           // Distances along one axis
@@ -240,9 +243,10 @@ int main(int argc, char** argv) {
     vmcd->rho = 0.02277696793f;                     // Density from W. L. McMillan, Ground State of Liquid He⁴, Phys. Rev.138, A442 (1965)
 
     // Parameters of time evolution
-    vmcd->Ntseq = 8192;                             // equilibration timesteps
-    vmcd->Nts = 16384;                              // run timesteps
-    vmcd->decTs = 256;                              // decorrelation timesteps
+    vmcd->Ntseq = 16384;                             // equilibration timesteps
+    vmcd->Nts = 65536;                              // run timesteps
+    vmcd->decTs = 128;                              // decorrelation timesteps 16384/128= 128
+    vmcd->acc_steps = 256;                          // gamma is adapted 8192/256 = 32 times
     size_t accepted_moves = 0;
 
     // Simulation box
@@ -250,11 +254,11 @@ int main(int argc, char** argv) {
     printf("L=%f\n", vmcd->L);
 
 
-    // [TODO] Move these quantities to the gpu
     // Microscopic quantities
     // -- Init positions --
     vmcd->coord = (DoubleBuffer*) malloc(sizeof(DoubleBuffer));         // Double buffer for R_old and R_new
     d_initDoubleBuffer(vmcd->coord, 3*vmcd->Np);
+    vmcd->h_coord = (float*) malloc(3*vmcd->Np*sizeof(float));
 
     // -- Init pairwise distances --
     const unsigned int n_pairs = vmcd->Np*(vmcd->Np-1)/2;
@@ -273,12 +277,12 @@ int main(int argc, char** argv) {
 
     // -- Init Energy --
     vmcd->Eb = (CyclicBuffer*) malloc( sizeof(CyclicBuffer));   // Average over the last 2048 values of the energy
-    h_initCyclicBuffer(vmcd->Eb, 8 );
+    h_initCyclicBuffer(vmcd->Eb, vmcd->Nts/vmcd->decTs-1);
     CUDA_CHECK( cudaMalloc( &(vmcd->v_El), n_pairs*sizeof(float)));
     CUDA_CHECK( cudaMalloc(&(vmcd->d_El), sizeof(float)) );
 
     // Meta properties
-    vmcd->a1 = 2.51f;                                // Initial conditions for density in W. L. McMillan, Ground State
+    vmcd->a1 = 2.6f;//2.51f;                                // Initial conditions for density in W. L. McMillan, Ground State
     vmcd->a2 = 5.f;                                   // of Liquid He⁴, Phys. Rev.138, A442 (1965)
     vmcd->gamma = 0.16f;                            // Initial esteem for MC step displacement
 
@@ -309,64 +313,92 @@ int main(int argc, char** argv) {
     cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, vmcd->v_logPsi2, vmcd->d_logPsi2, n_pairs);
     CUDA_CHECK( cudaMemcpy( &(vmcd->h_logPsi2),  vmcd->d_logPsi2,sizeof(float), cudaMemcpyDeviceToHost));
 
-    //printf("vmcd->h_logPsi2=%f\n", vmcd->h_logPsi2);
-
-
     DOUBLE_BUFFER_NEXT_STEP(vmcd->coord); // Move coordinates from R_new to R_old
-
-    // [TODO] Reintroduce `Equilibration` and adaptive step
     cudaDeviceSynchronize();
-    // Monte Carlo loop for the WF
-    printf("\n------------------------------------------------\n");
-    for(unsigned int t=0; t< vmcd->Nts; t++) {
-        printf("[%u/%u] ", t, vmcd->Nts);
 
+
+    // Monte Carlo for equilibration
+    printf("Acceptation:\n");
+    for(unsigned int t=0; t< vmcd->Ntseq; t++) {
+        CUDA_CHECK( cudaMemset(vmcd->F, 0, 3*vmcd->Np*sizeof(float)) );                                                                      // Clear buffer for accumulation
+        d_computeQuantumForce<<<blocks_particles, threads>>>(vmcd->a1, vmcd->a2, vmcd->pairs, n_pairs, vmcd->dxyz, vmcd->dr, vmcd->F);                  // Compute quantum force
+        d_diffuse<<<blocks_particles, threads>>>(vmcd->L, vmcd->gamma, vmcd->Np, vmcd->coord->prev, vmcd->F, vmcd->rng_states, vmcd->coord->next);      // Diffuse particles
+        d_computePairwiseDistancesWithPCB<<<blocks_pairs, threads>>>(vmcd->coord->next, vmcd->pairs, vmcd->Np, vmcd->L, vmcd->dxyz, vmcd->dr);     // Compute pairwise distance
+        d_computeLogPsi2<<<blocks_pairs, threads>>>(vmcd->dr, n_pairs, vmcd->a1, vmcd->a2, vmcd->v_logPsi2);                                            // Compute logPsi
+        cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, vmcd->v_logPsi2, vmcd->d_logPsi2, n_pairs);                             // Aggregate logPsi in a single value
+        CUDA_CHECK( cudaMemcpy(&h_proplogPsi2,  vmcd->d_logPsi2,sizeof(float), cudaMemcpyDeviceToHost) );                                    // Copy the value on the CPU
+        cudaDeviceSynchronize();                                                                                                                        // Wait for kernel to execute
+
+        const float deltaLogPsi2 = h_proplogPsi2 - vmcd->h_logPsi2;
+        if( deltaLogPsi2>0 || logf( rand()*RAND_MAX_i)<= deltaLogPsi2) {
+            accepted_moves++;
+            vmcd->h_logPsi2 = h_proplogPsi2;        // Copy the new probability
+            DOUBLE_BUFFER_NEXT_STEP(vmcd->coord);   // Accept the new position
+        }
+
+        if( (t+1)% vmcd->acc_steps==0) {
+            float acc = (float) accepted_moves/ (float) vmcd->acc_steps;
+            const float acc_target = 0.5;
+
+            printf("[%3.0lf%%, gamma=%f->", 100*acc, vmcd->gamma);
+            vmcd->gamma *= 1.f + 0.5f*(acc-acc_target);
+            printf("%f]\n", vmcd->gamma);
+            accepted_moves = 0;
+        }
+    }
+
+
+    printf("\nMonte Carlo Run\n");
+    unsigned int new_energy = 0;
+
+    FILE* fp_energy = fopen("energy.csv", "w");
+    if( fp_energy == NULL ) {
+        printf("Error opening file\n");
+    }
+    fprintf(fp_energy, "Timestep, Total Energy [K], Energy per particle [erg]\n");
+
+    LammpsDat* positions = (LammpsDat*) malloc(sizeof(LammpsDat));
+    initLammpsData(positions, "positions.lammpstrj", vmcd->Np, vmcd->L);
+
+    // Monte Carlo loop for the WF
+    for(unsigned int t=0; t< vmcd->Nts; t++) {
         CUDA_CHECK( cudaMemset(vmcd->F, 0, 3*vmcd->Np*sizeof(float)) ); // Clear buffer for accumulation
         d_computeQuantumForce<<<blocks_particles, threads>>>(vmcd->a1, vmcd->a2, vmcd->pairs, n_pairs, vmcd->dxyz, vmcd->dr, vmcd->F);
         d_diffuse<<<blocks_particles, threads>>>(vmcd->L, vmcd->gamma, vmcd->Np, vmcd->coord->prev, vmcd->F, vmcd->rng_states, vmcd->coord->next);
         d_computePairwiseDistancesWithPCB<<<blocks_pairs, threads>>>(vmcd->coord->next, vmcd->pairs, vmcd->Np, vmcd->L, vmcd->dxyz, vmcd->dr);
         d_computeLogPsi2<<<blocks_pairs, threads>>>(vmcd->dr, n_pairs, vmcd->a1, vmcd->a2, vmcd->v_logPsi2);
-
         cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, vmcd->v_logPsi2, vmcd->d_logPsi2, n_pairs);
         CUDA_CHECK( cudaMemcpy(&h_proplogPsi2,  vmcd->d_logPsi2,sizeof(float), cudaMemcpyDeviceToHost) );
         cudaDeviceSynchronize();
 
         const float deltaLogPsi2 = h_proplogPsi2 - vmcd->h_logPsi2;
-        printf("%f-%f=%f ", h_proplogPsi2, vmcd->h_logPsi2, deltaLogPsi2);
-
         if( deltaLogPsi2>0 || logf( rand()*RAND_MAX_i)<= deltaLogPsi2) {
             accepted_moves++;
             d_computeEnergy<<<blocks_pairs, threads>>>(vmcd->pairs, n_pairs, vmcd->dr, vmcd->a1, vmcd->a2, vmcd->v_El); // Compute new local energy
-            // As type and length of v_El is the same as v_logPsi2 I can use the same scratchpad
             cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, vmcd->v_El, vmcd->d_El, n_pairs);
             CUDA_CHECK( cudaMemcpy(&(vmcd->h_El), vmcd->d_El, sizeof(float), cudaMemcpyDeviceToHost) );
-            printf("Energy: %f ", vmcd->h_El);
 
             vmcd->h_logPsi2 = h_proplogPsi2;                // Copy the new probability
             DOUBLE_BUFFER_NEXT_STEP(vmcd->coord);   // Accept the new position
+            new_energy = 1;
+        } else {
+            new_energy = 0;
         }
-
-        size_t acc_step = 256;
-        if( (t+1)%acc_step==0) {
-            float acc = (float) accepted_moves/ (float) acc_step;
-            const float acc_target = 0.5;
-
-            printf("[ACCEPTATION=%3.0lf%%, vmcd->gamma=%f -> ", 100*acc, vmcd->gamma);
-            vmcd->gamma *= 1.f + 0.5f*(acc-acc_target);
-            printf("%f ]", vmcd->gamma);
-            accepted_moves = 0;
-        }
+        fprintf(fp_energy, "%u, %u, %f, %.4e\n", t, new_energy, vmcd->h_El, 1.38e-16 * ((double) vmcd->h_El / (double) vmcd->Np)  );
 
         if(t%vmcd->decTs == 0) {
-            // Decorrelate energy by placing only one sample per 128
+            //printf("[%u/%u] El=%.4e\n", t, vmcd->Nts, vmcd->h_El);
             CYCLIC_BUFFER_PUSH(vmcd->Eb, vmcd->h_El);
+            // [MAJOR TODO] Save particles to file
+            CUDA_CHECK( cudaMemcpy(vmcd->h_coord,  vmcd->coord->prev,3*vmcd->Np*sizeof(float), cudaMemcpyDeviceToHost) );
+            writeLammpsDatFrame(positions, vmcd->h_coord);
         }
-        printf("\n");
     }
+    fclose(fp_energy);
 
-    float aveE, varE;
+    double aveE, varE;
     computeAveVarf(vmcd->Eb->data, vmcd->Eb->capacity, &aveE, &varE);
-    printf("aveE=%lf varE=%lf\n", aveE, varE);
+    printf("aveE=%lf stdE=%lf, aveE per particle=%.4e\n", aveE, sqrtf(varE), 1.38e-16 * ((double) aveE / (double) vmcd->Np) );
 
 
     // [MAJOR TODO] Free memory
