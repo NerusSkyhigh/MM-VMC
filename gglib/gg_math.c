@@ -46,16 +46,19 @@ void computeAveVar(const double* v, size_t size, double* mean, double* var) {
     *var = (x2/ (double) size) - (*mean) * (*mean);
 }
 
-void computeAveVarf(const float* v, size_t size, float* mean, float* var) {
-    float x = 0;
-    float x2 = 0;
+void computeAveVarf(const float* v, size_t size, double* mean, double* var) {
+    double x = 0;
+    double x2 = 0;
+    double s;
 
     for (size_t i = 0; i < size; i++) {
-        x  += v[i];
-        x2 += v[i] * v[i];
+        s = (double) v[i];
+        x  += s / (double) size;
+        x2 += s*s / (double) size;
     }
-    *mean = x / (float) size;
-    *var = (x2/ (float) size) - (*mean) * (*mean);
+    *mean = x;// / (float) size;
+    *var = x2 - (*mean) * (*mean);
+    //*var = (x2/ (float) size) - (*mean) * (*mean);
 }
 
 

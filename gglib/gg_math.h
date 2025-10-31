@@ -32,7 +32,7 @@ double randn(void);
  */
 void computeAveVar(const double* v, size_t size, double* mean, double* var);
 
-void computeAveVarf(const float* v, size_t size, float* mean, float* var);
+void computeAveVarf(const float* v, size_t size, double* mean, double* var);
 
 /** @fn UPPER_TRIANGULAR_INDEX
  * @brief UPPER_TRIANGULAR_INDEX computes the linear index for an upper triangular scheme. p1-major
