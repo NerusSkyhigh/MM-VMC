@@ -8,6 +8,7 @@ project(QMC
         C
         CUDA
 )
+enable_language(CUDA)
 
 if (UNIX)
     set(CMAKE_C_FLAGS "-pedantic -Wall -Wextra -Wconversion")
@@ -48,5 +49,10 @@ add_executable(gpuVMC VariationalMonteCarlo.cu
         gglib/gg_mem.h
         physics.cuh
 )
+set_target_properties(gpuVMC PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        CUDA_ARCHITECTURES native
+)
+
 
 add_subdirectory(tests)
