@@ -2,6 +2,7 @@
 // Created by Guglielmo Grillo on 17/10/25.
 //
 #pragma once
+#include <curand_kernel.h>
 
 /** @file gg_math.cuh
  *  @brief Implementation of useful functions not available in the standard library
