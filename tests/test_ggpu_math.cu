@@ -31,12 +31,12 @@ TEST(GgGpuMathTest, d_computePairwiseDistancesWithPCB_CubeNoPCB) {
     }
 
     const int n_pairs = n_particles * (n_particles - 1) / 2;
-    std::vector<size_t> pairs(2 * n_pairs);
+    std::vector<unsigned int> pairs(2 * n_pairs);
     int pair_idx = 0;
     for (int p1 = 0; p1 < n_particles; ++p1) {
         for (int p2 = p1 + 1; p2 < n_particles; ++p2) {
-            pairs[2 * pair_idx]     = static_cast<size_t>(p1);
-            pairs[2 * pair_idx + 1] = static_cast<size_t>(p2);
+            pairs[2 * pair_idx]     = static_cast<unsigned int>(p1);
+            pairs[2 * pair_idx + 1] = static_cast<unsigned int>(p2);
             ++pair_idx;
         }
     }
@@ -46,21 +46,28 @@ TEST(GgGpuMathTest, d_computePairwiseDistancesWithPCB_CubeNoPCB) {
     std::vector<double> r_utb_cpu(n_pairs, 0.0);   // CPU reference uses double (your CPU function)
 
     float *d_coords = nullptr, *d_dxyz = nullptr, *d_rutb = nullptr;
-    size_t *d_pairs = nullptr;
+    unsigned int* d_pairs;
     CUDA_CHECK(cudaMalloc(&d_coords, coords.size() * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_pairs, pairs.size() * sizeof(size_t)));
+    CUDA_CHECK(cudaMalloc(&d_pairs, pairs.size() * sizeof(unsigned int)));
     CUDA_CHECK(cudaMalloc(&d_dxyz, dxyz.size() * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_rutb, r_utb_dev.size() * sizeof(float)));
+    CUDA_CHECK(cudaGetLastError());
+    printf("cudaMalloc Worked\n");
 
     CUDA_CHECK(cudaMemcpy(d_coords, coords.data(), coords.size() * sizeof(float), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_pairs, pairs.data(), pairs.size() * sizeof(size_t), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_pairs, pairs.data(), pairs.size() * sizeof(unsigned int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaGetLastError());
+    printf("cudaMemcpy Worked\n");
 
     // launch
-    int threads = std::min(1024, n_pairs);
+    int threads = std::min(32, n_pairs);
     int blocks = (n_pairs + threads - 1) / threads;
     d_computePairwiseDistancesWithPCB<<<blocks, threads>>>(d_coords, d_pairs, n_particles, L, d_dxyz, d_rutb);
     CUDA_CHECK(cudaGetLastError());
+
+    printf("Launching %d blocks of %d threads (n_pairs=%d)\n", blocks, threads, n_pairs);
     CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaPeekAtLastError());
 
     // copy results back
     CUDA_CHECK(cudaMemcpy(dxyz.data(), d_dxyz, dxyz.size() * sizeof(float), cudaMemcpyDeviceToHost));
