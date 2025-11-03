@@ -239,13 +239,13 @@ int main(int argc, char** argv) {
 
     VMCdata* vmcd = (VMCdata*) malloc(sizeof(VMCdata));
     // Properties of the system
-    vmcd->Np = 200;                                 // 200 Helium atoms
+    vmcd->Np = 200;//256;                                 // 200 Helium atoms
     vmcd->rho = 0.02277696793f;                     // Density from W. L. McMillan, Ground State of Liquid He⁴, Phys. Rev.138, A442 (1965)
 
     // Parameters of time evolution
-    vmcd->Ntseq = 16384;                             // equilibration timesteps
-    vmcd->Nts = 65536;                              // run timesteps
-    vmcd->decTs = 128;                              // decorrelation timesteps 16384/128= 128
+    vmcd->Ntseq =    16384;                             // equilibration timesteps
+    vmcd->Nts =   32768; //16*65536;                              // run timesteps
+    vmcd->decTs = 1; //64;                              // decorrelation timesteps 16384/128= 128
     vmcd->acc_steps = 256;                          // gamma is adapted 8192/256 = 32 times
     size_t accepted_moves = 0;
 
@@ -288,119 +288,126 @@ int main(int argc, char** argv) {
 
     CUDA_CHECK( cudaMalloc( &(vmcd->rng_states), vmcd->Np*sizeof(curandState_t) ) );
 
-    const int threads = 128;
+    const int threads = 32;
     const int blocks_particles = (vmcd->Np + threads - 1) / threads;
     const int blocks_pairs = (n_pairs + threads - 1) / threads;
 
     // Fill the values
     setupRNG<<<blocks_particles, threads>>>(vmcd->rng_states, 0, vmcd->Np);
 
-    d_initPositionsOnCube<<<blocks_particles, threads>>>(vmcd->coord->next, vmcd->Np, vmcd->L);  // Distribute particle on a Grid
-    d_storePairs<<<blocks_pairs, threads>>>(vmcd->pairs, vmcd->Np);
-    cudaDeviceSynchronize(); // [MINOR TODO] I'm using the default stream so this is not essential.
-
-    // [TODO] Find correct parameters for this kernel execution
-    d_computePairwiseDistancesWithPCB<<<blocks_pairs, threads>>>(vmcd->coord->next, vmcd->pairs, vmcd->Np, vmcd->L, vmcd->dxyz, vmcd->dr);
-    d_computeLogPsi2<<<blocks_pairs, threads>>>(vmcd->dr, n_pairs, vmcd->a1, vmcd->a2, vmcd->v_logPsi2);
-
-    // Phase 1: Query how much temporary storage is needed. As the length of `vmcd->v_logPsi2` does not change, this
-    //          needs to be done only once.
-    void* d_temp_storage = nullptr;     // NULL pointer acts as a flag for `cub::DeviceReduce::Sum` to change the value
-    size_t temp_storage_bytes = 0;      // of `temp_storage_bytes` without computing anything
-    cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, vmcd->v_logPsi2, vmcd->d_logPsi2, n_pairs);
-    CUDA_CHECK( cudaMalloc(&d_temp_storage, temp_storage_bytes) );
-    // Phase 2: Actually perform the reduction
-    cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, vmcd->v_logPsi2, vmcd->d_logPsi2, n_pairs);
-    CUDA_CHECK( cudaMemcpy( &(vmcd->h_logPsi2),  vmcd->d_logPsi2,sizeof(float), cudaMemcpyDeviceToHost));
-
-    DOUBLE_BUFFER_NEXT_STEP(vmcd->coord); // Move coordinates from R_new to R_old
-    cudaDeviceSynchronize();
-
-
-    // Monte Carlo for equilibration
-    printf("Acceptation:\n");
-    for(unsigned int t=0; t< vmcd->Ntseq; t++) {
-        CUDA_CHECK( cudaMemset(vmcd->F, 0, 3*vmcd->Np*sizeof(float)) );                                                                      // Clear buffer for accumulation
-        d_computeQuantumForce<<<blocks_particles, threads>>>(vmcd->a1, vmcd->a2, vmcd->pairs, n_pairs, vmcd->dxyz, vmcd->dr, vmcd->F);                  // Compute quantum force
-        d_diffuse<<<blocks_particles, threads>>>(vmcd->L, vmcd->gamma, vmcd->Np, vmcd->coord->prev, vmcd->F, vmcd->rng_states, vmcd->coord->next);      // Diffuse particles
-        d_computePairwiseDistancesWithPCB<<<blocks_pairs, threads>>>(vmcd->coord->next, vmcd->pairs, vmcd->Np, vmcd->L, vmcd->dxyz, vmcd->dr);     // Compute pairwise distance
-        d_computeLogPsi2<<<blocks_pairs, threads>>>(vmcd->dr, n_pairs, vmcd->a1, vmcd->a2, vmcd->v_logPsi2);                                            // Compute logPsi
-        cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, vmcd->v_logPsi2, vmcd->d_logPsi2, n_pairs);                             // Aggregate logPsi in a single value
-        CUDA_CHECK( cudaMemcpy(&h_proplogPsi2,  vmcd->d_logPsi2,sizeof(float), cudaMemcpyDeviceToHost) );                                    // Copy the value on the CPU
-        cudaDeviceSynchronize();                                                                                                                        // Wait for kernel to execute
-
-        const float deltaLogPsi2 = h_proplogPsi2 - vmcd->h_logPsi2;
-        if( deltaLogPsi2>0 || logf( rand()*RAND_MAX_i)<= deltaLogPsi2) {
-            accepted_moves++;
-            vmcd->h_logPsi2 = h_proplogPsi2;        // Copy the new probability
-            DOUBLE_BUFFER_NEXT_STEP(vmcd->coord);   // Accept the new position
-        }
-
-        if( (t+1)% vmcd->acc_steps==0) {
-            float acc = (float) accepted_moves/ (float) vmcd->acc_steps;
-            const float acc_target = 0.5;
-
-            printf("[%3.0lf%%, gamma=%f->", 100*acc, vmcd->gamma);
-            vmcd->gamma *= 1.f + 0.5f*(acc-acc_target);
-            printf("%f]\n", vmcd->gamma);
-            accepted_moves = 0;
-        }
-    }
-
-
-    printf("\nMonte Carlo Run\n");
-    unsigned int new_energy = 0;
-
-    FILE* fp_energy = fopen("energy.csv", "w");
-    if( fp_energy == NULL ) {
+    //FILE* fp_energy = fopen("../energy200.csv", "w");
+    FILE* fp_ave_energy = fopen("../ave_energy200.csv", "w");
+    if( fp_ave_energy == NULL ) {
         printf("Error opening file\n");
     }
-    fprintf(fp_energy, "Timestep, Total Energy [K], Energy per particle [erg]\n");
+    //fprintf(fp_energy, "a1, a2, Timestep, Total Energy [K], Energy per particle [erg]\n");
+    fprintf(fp_ave_energy, "a1, a2, Average Total Energy [K], Standard Deviation [K], Energy per particle [erg]\n");
 
-    LammpsDat* positions = (LammpsDat*) malloc(sizeof(LammpsDat));
-    initLammpsData(positions, "positions.lammpstrj", vmcd->Np, vmcd->L);
+    for(vmcd->a1 = 2.55f; vmcd->a1 < 2.65f; vmcd->a1 += 0.001f) {
+        for(vmcd->a2 = 4.9f; vmcd->a2 < 5.5f; vmcd->a2 += 0.01f) {
+            vmcd->gamma = 0.16f;
+            accepted_moves = 0;
+            printf("{a1=%.2e; a2=%.2e} ", vmcd->a1, vmcd->a2);
 
-    // Monte Carlo loop for the WF
-    for(unsigned int t=0; t< vmcd->Nts; t++) {
-        CUDA_CHECK( cudaMemset(vmcd->F, 0, 3*vmcd->Np*sizeof(float)) ); // Clear buffer for accumulation
-        d_computeQuantumForce<<<blocks_particles, threads>>>(vmcd->a1, vmcd->a2, vmcd->pairs, n_pairs, vmcd->dxyz, vmcd->dr, vmcd->F);
-        d_diffuse<<<blocks_particles, threads>>>(vmcd->L, vmcd->gamma, vmcd->Np, vmcd->coord->prev, vmcd->F, vmcd->rng_states, vmcd->coord->next);
-        d_computePairwiseDistancesWithPCB<<<blocks_pairs, threads>>>(vmcd->coord->next, vmcd->pairs, vmcd->Np, vmcd->L, vmcd->dxyz, vmcd->dr);
-        d_computeLogPsi2<<<blocks_pairs, threads>>>(vmcd->dr, n_pairs, vmcd->a1, vmcd->a2, vmcd->v_logPsi2);
-        cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, vmcd->v_logPsi2, vmcd->d_logPsi2, n_pairs);
-        CUDA_CHECK( cudaMemcpy(&h_proplogPsi2,  vmcd->d_logPsi2,sizeof(float), cudaMemcpyDeviceToHost) );
-        cudaDeviceSynchronize();
+            d_initPositionsOnCube<<<blocks_particles, threads>>>(vmcd->coord->next, vmcd->Np, vmcd->L);  // Distribute particle on a Grid
+            d_storePairs<<<blocks_pairs, threads>>>(vmcd->pairs, vmcd->Np);
+            cudaDeviceSynchronize(); // [MINOR TODO] I'm using the default stream so this is not essential.
 
-        const float deltaLogPsi2 = h_proplogPsi2 - vmcd->h_logPsi2;
-        if( deltaLogPsi2>0 || logf( rand()*RAND_MAX_i)<= deltaLogPsi2) {
-            accepted_moves++;
-            d_computeEnergy<<<blocks_pairs, threads>>>(vmcd->pairs, n_pairs, vmcd->dr, vmcd->a1, vmcd->a2, vmcd->v_El); // Compute new local energy
-            cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, vmcd->v_El, vmcd->d_El, n_pairs);
-            CUDA_CHECK( cudaMemcpy(&(vmcd->h_El), vmcd->d_El, sizeof(float), cudaMemcpyDeviceToHost) );
+            // [TODO] Find correct parameters for this kernel execution
+            d_computePairwiseDistancesWithPCB<<<blocks_pairs, threads>>>(vmcd->coord->next, vmcd->pairs, vmcd->Np, vmcd->L, vmcd->dxyz, vmcd->dr);
+            d_computeLogPsi2<<<blocks_pairs, threads>>>(vmcd->dr, n_pairs, vmcd->a1, vmcd->a2, vmcd->v_logPsi2);
 
-            vmcd->h_logPsi2 = h_proplogPsi2;                // Copy the new probability
-            DOUBLE_BUFFER_NEXT_STEP(vmcd->coord);   // Accept the new position
-            new_energy = 1;
-        } else {
-            new_energy = 0;
-        }
-        fprintf(fp_energy, "%u, %u, %f, %.4e\n", t, new_energy, vmcd->h_El, 1.38e-16 * ((double) vmcd->h_El / (double) vmcd->Np)  );
+            // Phase 1: Query how much temporary storage is needed. As the length of `vmcd->v_logPsi2` does not change, this
+            //          needs to be done only once.
+            void* d_temp_storage = nullptr;     // NULL pointer acts as a flag for `cub::DeviceReduce::Sum` to change the value
+            size_t temp_storage_bytes = 0;      // of `temp_storage_bytes` without computing anything
+            cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, vmcd->v_logPsi2, vmcd->d_logPsi2, n_pairs);
+            CUDA_CHECK( cudaMalloc(&d_temp_storage, temp_storage_bytes) );
+            // Phase 2: Actually perform the reduction
+            cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, vmcd->v_logPsi2, vmcd->d_logPsi2, n_pairs);
+            CUDA_CHECK( cudaMemcpy( &(vmcd->h_logPsi2),  vmcd->d_logPsi2,sizeof(float), cudaMemcpyDeviceToHost));
 
-        if(t%vmcd->decTs == 0) {
-            //printf("[%u/%u] El=%.4e\n", t, vmcd->Nts, vmcd->h_El);
-            CYCLIC_BUFFER_PUSH(vmcd->Eb, vmcd->h_El);
-            // [MAJOR TODO] Save particles to file
-            CUDA_CHECK( cudaMemcpy(vmcd->h_coord,  vmcd->coord->prev,3*vmcd->Np*sizeof(float), cudaMemcpyDeviceToHost) );
-            writeLammpsDatFrame(positions, vmcd->h_coord);
+            DOUBLE_BUFFER_NEXT_STEP(vmcd->coord); // Move coordinates from R_new to R_old
+            cudaDeviceSynchronize();
+
+            // Monte Carlo for equilibration
+            printf("Eq: ");
+            for(unsigned int t=0; t< vmcd->Ntseq; t++) {
+                CUDA_CHECK( cudaMemset(vmcd->F, 0, 3*vmcd->Np*sizeof(float)) );                                                                      // Clear buffer for accumulation
+                d_computeQuantumForce<<<blocks_particles, threads>>>(vmcd->a1, vmcd->a2, vmcd->pairs, n_pairs, vmcd->dxyz, vmcd->dr, vmcd->F);                  // Compute quantum force
+                d_diffuse<<<blocks_particles, threads>>>(vmcd->L, vmcd->gamma, vmcd->Np, vmcd->coord->prev, vmcd->F, vmcd->rng_states, vmcd->coord->next);      // Diffuse particles
+                d_computePairwiseDistancesWithPCB<<<blocks_pairs, threads>>>(vmcd->coord->next, vmcd->pairs, vmcd->Np, vmcd->L, vmcd->dxyz, vmcd->dr);     // Compute pairwise distance
+                d_computeLogPsi2<<<blocks_pairs, threads>>>(vmcd->dr, n_pairs, vmcd->a1, vmcd->a2, vmcd->v_logPsi2);                                            // Compute logPsi
+                cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, vmcd->v_logPsi2, vmcd->d_logPsi2, n_pairs);                             // Aggregate logPsi in a single value
+                CUDA_CHECK( cudaMemcpy(&h_proplogPsi2,  vmcd->d_logPsi2,sizeof(float), cudaMemcpyDeviceToHost) );                                    // Copy the value on the CPU
+                cudaDeviceSynchronize();                                                                                                                        // Wait for kernel to execute
+
+                const float deltaLogPsi2 = h_proplogPsi2 - vmcd->h_logPsi2;
+                if( deltaLogPsi2>0 || logf( rand()*RAND_MAX_i)<= deltaLogPsi2) {
+                    accepted_moves++;
+                    vmcd->h_logPsi2 = h_proplogPsi2;        // Copy the new probability
+                    DOUBLE_BUFFER_NEXT_STEP(vmcd->coord);   // Accept the new position
+                }
+
+                if( (t+1)% vmcd->acc_steps==0) {
+                    float acc = (float) accepted_moves/ (float) vmcd->acc_steps;
+                    const float acc_target = 0.5;
+
+                    //printf("[%3.0lf%%, gamma=%.3e->", 100*acc, vmcd->gamma);
+                    vmcd->gamma *= 1.f + 0.5f*(acc-acc_target);
+                    //printf("%.3e] ", vmcd->gamma);
+                    printf("[%2.0lf%%, %.3e] ", 100*acc, vmcd->gamma);
+                    accepted_moves = 0;
+                }
+            }
+
+
+            printf("\tMC run: ");
+            //LammpsDat* positions = (LammpsDat*) malloc(sizeof(LammpsDat));
+            //initLammpsData(positions, "positions.lammpstrj", vmcd->Np, vmcd->L);
+
+
+            // Monte Carlo loop for the WF
+            for(unsigned int t=0; t< vmcd->Nts; t++) {
+                CUDA_CHECK( cudaMemset(vmcd->F, 0, 3*vmcd->Np*sizeof(float)) ); // Clear buffer for accumulation
+                d_computeQuantumForce<<<blocks_particles, threads>>>(vmcd->a1, vmcd->a2, vmcd->pairs, n_pairs, vmcd->dxyz, vmcd->dr, vmcd->F);
+                d_diffuse<<<blocks_particles, threads>>>(vmcd->L, vmcd->gamma, vmcd->Np, vmcd->coord->prev, vmcd->F, vmcd->rng_states, vmcd->coord->next);
+                d_computePairwiseDistancesWithPCB<<<blocks_pairs, threads>>>(vmcd->coord->next, vmcd->pairs, vmcd->Np, vmcd->L, vmcd->dxyz, vmcd->dr);
+                d_computeLogPsi2<<<blocks_pairs, threads>>>(vmcd->dr, n_pairs, vmcd->a1, vmcd->a2, vmcd->v_logPsi2);
+                cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, vmcd->v_logPsi2, vmcd->d_logPsi2, n_pairs);
+                CUDA_CHECK( cudaMemcpy(&h_proplogPsi2,  vmcd->d_logPsi2,sizeof(float), cudaMemcpyDeviceToHost) );
+                cudaDeviceSynchronize();
+
+                const float deltaLogPsi2 = h_proplogPsi2 - vmcd->h_logPsi2;
+                if( deltaLogPsi2>0 || logf( rand()*RAND_MAX_i)<= deltaLogPsi2) {
+                    accepted_moves++;
+                    d_computeEnergy<<<blocks_pairs, threads>>>(vmcd->pairs, n_pairs, vmcd->dr, vmcd->a1, vmcd->a2, vmcd->v_El); // Compute new local energy
+                    cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, vmcd->v_El, vmcd->d_El, n_pairs);
+                    CUDA_CHECK( cudaMemcpy(&(vmcd->h_El), vmcd->d_El, sizeof(float), cudaMemcpyDeviceToHost) );
+
+                    vmcd->h_logPsi2 = h_proplogPsi2;                // Copy the new probability
+                    DOUBLE_BUFFER_NEXT_STEP(vmcd->coord);   // Accept the new position
+
+                    //fprintf(fp_energy, "%.2f, %.2f, %u, %.6e, %.6e\n", vmcd->a1, vmcd->a2, t, vmcd->h_El, 1.38e-16 * ((double) vmcd->h_El / (double) vmcd->Np)  );
+                }
+
+                if(t%vmcd->decTs == 0) {
+                    //printf("[%u/%u] El=%.4e\n", t, vmcd->Nts, vmcd->h_El);
+                    CYCLIC_BUFFER_PUSH(vmcd->Eb, vmcd->h_El);
+                    CUDA_CHECK( cudaMemcpy(vmcd->h_coord,  vmcd->coord->prev,3*vmcd->Np*sizeof(float), cudaMemcpyDeviceToHost) );
+                    //writeLammpsDatFrame(positions, vmcd->h_coord);
+                }
+            }
+
+            double aveE, varE;
+            computeAveVarf(vmcd->Eb->data, vmcd->Eb->capacity, &aveE, &varE);
+            printf("aveE=%.6e [K] stdE=%.6e [K], aveE/N=%.6e [erg]\n\n", aveE, sqrtf(varE), 1.38e-16 * ((double) aveE / (double) vmcd->Np) );
+            fprintf(fp_ave_energy, "%.2f, %.2f, %.6e, %.6e, %.6e\n", vmcd->a1, vmcd->a2, aveE, sqrtf(varE), 1.38e-16 * ((double) aveE / (double) vmcd->Np));
         }
     }
-    fclose(fp_energy);
 
-    double aveE, varE;
-    computeAveVarf(vmcd->Eb->data, vmcd->Eb->capacity, &aveE, &varE);
-    printf("aveE=%lf stdE=%lf, aveE per particle=%.4e\n", aveE, sqrtf(varE), 1.38e-16 * ((double) aveE / (double) vmcd->Np) );
-
-
+    //fclose(fp_energy);
+    fclose(fp_ave_energy);
     // [MAJOR TODO] Free memory
 
     return 0;
