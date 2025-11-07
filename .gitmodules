@@ -1,0 +1,3 @@
+[submodule "gglib-c"]
+	path = gglib-c
+	url = https://github.com/nerusskyhigh/gglib-c
