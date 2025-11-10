@@ -5,7 +5,7 @@
 #include <time.h>
 #include <string.h>
 
-#include "gglib/gg_math.h"
+#include "gglib-c/include/gg_math.h"
 #include "gglib/gg_mem.h"
 #include "physics.h"
 

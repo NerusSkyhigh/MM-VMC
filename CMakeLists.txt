@@ -17,17 +17,17 @@ endif()
 
 
 add_executable(QMC DiffusionMonteCarlo.c
-        gglib/gg_math.h
-        gglib/gg_math.c
-        gglib/gg_mem.c
+        gglib-c/include/gg_math.h
+        gglib-c/src/gg_math.c
+        gglib-c/src/gg_mem.c
         physics.c
         physics.h
 )
 
 add_executable(VMC VariationalMonteCarlo.c
-        gglib/gg_math.h
-        gglib/gg_math.c
-        gglib/gg_mem.c
+        gglib-c/include/gg_math.h
+        gglib-c/src/gg_math.c
+        gglib-c/src/gg_mem.c
         physics.c
         physics.h
 )
@@ -43,13 +43,13 @@ add_executable(gpuVMC VariationalMonteCarlo.cu
         ggpulib/gg_mem.cuh
         ggpulib/gg_cuda_macro.cuh
 
-        gglib/gg_math.h
-        gglib/gg_math.c
-        gglib/gg_mem.c
-        gglib/gg_mem.h
+        gglib-c/include/gg_math.h
+        gglib-c/src/gg_math.c
+        gglib-c/src/gg_mem.c
+        gglib-c/include/gg_mem.h
         physics.cuh
-        gglib/gg_io.c
-        gglib/gg_io.h
+        gglib-c/src/gg_io.c
+        gglib-c/include/gg_io.h
 )
 set_target_properties(gpuVMC PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
