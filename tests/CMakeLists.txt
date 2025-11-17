@@ -26,7 +26,6 @@ enable_testing()
 add_executable(cpu_tests
         test_gg_math.cpp
         ${PROJECT_SOURCE_DIR}/../gglib-c/src/gg_math.c
-        ${PROJECT_SOURCE_DIR}/../gglib-c/src/gg_mem.c
         ${PROJECT_SOURCE_DIR}/../physics.c
 )
 target_include_directories(cpu_tests PRIVATE ${PROJECT_SOURCE_DIR}/../gglib)
