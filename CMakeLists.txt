@@ -14,12 +14,11 @@ if (UNIX)
     set(CMAKE_C_FLAGS "-pedantic -Wall -Wextra -Wconversion")
 endif()
 
-
+add_subdirectory(gglib-c)
 
 add_executable(QMC DiffusionMonteCarlo.c
         gglib-c/include/gg_math.h
         gglib-c/src/gg_math.c
-        gglib-c/src/gg_mem.c
         physics.c
         physics.h
 )
@@ -27,7 +26,6 @@ add_executable(QMC DiffusionMonteCarlo.c
 add_executable(VMC VariationalMonteCarlo.c
         gglib-c/include/gg_math.h
         gglib-c/src/gg_math.c
-        gglib-c/src/gg_mem.c
         physics.c
         physics.h
 )
@@ -45,8 +43,6 @@ add_executable(gpuVMC VariationalMonteCarlo.cu
 
         gglib-c/include/gg_math.h
         gglib-c/src/gg_math.c
-        gglib-c/src/gg_mem.c
-        gglib-c/include/gg_mem.h
         physics.cuh
         gglib-c/src/gg_io.c
         gglib-c/include/gg_io.h
