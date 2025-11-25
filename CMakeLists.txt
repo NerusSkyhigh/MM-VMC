@@ -14,24 +14,26 @@ if (UNIX)
     set(CMAKE_C_FLAGS "-pedantic -Wall -Wextra -Wconversion")
 endif()
 
-add_subdirectory(gglib-c)
+add_subdirectory(gglib-c/src)
 
 add_executable(QMC DiffusionMonteCarlo.c
-        gglib-c/include/gg_math.h
-        gglib-c/src/gg_math.c
         physics.c
         physics.h
 )
 
+target_link_libraries(QMC
+        m
+        gg_math
+)
+
 add_executable(VMC VariationalMonteCarlo.c
-        gglib-c/include/gg_math.h
-        gglib-c/src/gg_math.c
         physics.c
         physics.h
 )
 
 target_link_libraries(VMC
         m
+        gg_math
 )
 
 add_executable(gpuVMC VariationalMonteCarlo.cu
@@ -41,12 +43,15 @@ add_executable(gpuVMC VariationalMonteCarlo.cu
         ggpulib/gg_mem.cuh
         ggpulib/gg_cuda_macro.cuh
 
-        gglib-c/include/gg_math.h
-        gglib-c/src/gg_math.c
         physics.cuh
         gglib-c/src/gg_io.c
         gglib-c/include/gg_io.h
 )
+
+target_link_libraries(gpuVMC
+        gg_math
+)
+
 set_target_properties(gpuVMC PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
         CUDA_ARCHITECTURES native
