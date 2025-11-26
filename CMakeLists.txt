@@ -16,16 +16,6 @@ endif()
 
 add_subdirectory(gglib-c/src)
 
-add_executable(QMC DiffusionMonteCarlo.c
-        physics.c
-        physics.h
-)
-
-target_link_libraries(QMC
-        m
-        gg_math
-)
-
 add_executable(VMC VariationalMonteCarlo.c
         physics.c
         physics.h
