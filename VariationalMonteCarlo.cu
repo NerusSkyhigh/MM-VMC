@@ -1,6 +1,12 @@
 // VariationalMonteCarlo.cu
+#include <chrono>
+#include <ctime>
+#include <cstdio>
+
 #include <curand_kernel.h>
 #include <cub/cub.cuh>
+
+
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -257,7 +263,7 @@ int main(int argc, char** argv) {
 
     // Parameters of time evolution
     vmcd->Ntseq =  8192;                            // equilibration timesteps
-    vmcd->Nts =   131072;                           // run timesteps
+    vmcd->Nts =   40*40*131072;                           // run timesteps
     vmcd->decTs = 1;                                // decorrelation timesteps 16384/128= 128
     vmcd->acc_steps = 256;                          // gamma is adapted 8192/256 = 32 times
     size_t accepted_moves = 0;
@@ -315,7 +321,7 @@ int main(int argc, char** argv) {
     setupRNG<<<blocks_particles, threads>>>(vmcd->rng_states, 0, vmcd->Np);
     
     //FILE* fp_energy = fopen("../energy200.csv", "w");
-    FILE* fp_ave_energy = fopen("../ave_energy200.csv", "w");
+    FILE* fp_ave_energy = fopen("../McMillan_minimum.csv", "w");
     if( fp_ave_energy == NULL ) {
         printf("Error opening file\n");
     }
@@ -323,8 +329,8 @@ int main(int argc, char** argv) {
     fprintf(fp_ave_energy, "a1, a2, Average Total Energy [K], Standard Deviation [K], Energy per particle [erg]\n");
 
     int iterations = 0;
-    for(vmcd->a1 = 2.1f; vmcd->a1 < 3.6f; vmcd->a1 += 0.05f) {
-        for(vmcd->a2 = 3.f; vmcd->a2 < 10.6f; vmcd->a2 += 0.5f) {
+    for(vmcd->a1 = 2.6f; vmcd->a1 < 2.7f; vmcd->a1 += 2.f) { // 30
+        for(vmcd->a2 = 5.f; vmcd->a2 < 6.f; vmcd->a2 += 2.f) { // 15 -> 450 total
             vmcd->gamma = 0.16f;
             accepted_moves = 0;
             printf("%d) {a1=%.2e; a2=%.2e} ", ++iterations, vmcd->a1, vmcd->a2);
@@ -363,8 +369,37 @@ int main(int argc, char** argv) {
 
             // Monte Carlo for equilibration
 
+            // Start a clock to time the MC run
+            using clock_type = std::chrono::steady_clock;
+            static auto start = clock_type::now();
+
+
             printf("Eq: ");
             for(unsigned int t=0; t< vmcd->Ntseq + vmcd->Nts; t++) {
+                if(t % (5*3*131072) == 0) {
+                    auto now = clock_type::now();
+                    double elapsed = std::chrono::duration<double>(now - start).count();
+                    double rate = t / elapsed;
+                    double remaining = (vmcd->Ntseq + vmcd->Nts - t) / rate;
+
+                    int hours = remaining / 3600;
+                    int minutes = ((int)remaining % 3600) / 60;
+                    int seconds = (int)remaining % 60;
+
+                    time_t wall = time(NULL);
+                    struct tm tm;
+                    localtime_s(&tm, &wall);
+                    char buf[32];
+                    strftime(buf, sizeof(buf), "%H:%M:%S", &tm);
+
+                    printf("%s  %u/%u  ETA %02d:%02d:%02d\n",
+                           buf,
+                           t, vmcd->Ntseq + vmcd->Nts,
+                           hours, minutes, seconds);
+
+                    fflush(stdout);
+                }
+
                 CUDA_CHECK( cudaMemset(vmcd->F->next, 0, 3*vmcd->Np*sizeof(float)) );                                                                      // Clear buffer for accumulation
                 d_computeQuantumForce<<<blocks_particles, threads>>>(vmcd->a1, vmcd->a2, vmcd->pairs, n_pairs, vmcd->dxyz, vmcd->dr, vmcd->F->next);                  // Compute quantum force
                 d_diffuse<<<blocks_particles, threads>>>(vmcd->L, vmcd->gamma, vmcd->Np, vmcd->coord->prev, vmcd->F->next, vmcd->rng_states, vmcd->coord->next);      // Diffuse particles
