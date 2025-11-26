@@ -324,7 +324,7 @@ int main(int argc, char** argv) {
 
     int iterations = 0;
     for(vmcd->a1 = 2.1f; vmcd->a1 < 3.6f; vmcd->a1 += 0.05f) {
-        for(vmcd->a2 = 3.f; vmcd->a2 < 10.6f; vmcd->a2 += 0.1f) {
+        for(vmcd->a2 = 3.f; vmcd->a2 < 10.6f; vmcd->a2 += 0.5f) {
             vmcd->gamma = 0.16f;
             accepted_moves = 0;
             printf("%d) {a1=%.2e; a2=%.2e} ", ++iterations, vmcd->a1, vmcd->a2);
