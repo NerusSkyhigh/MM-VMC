@@ -8,7 +8,7 @@
 #include "ggpulib/gg_math.cuh"
 #include "ggpulib/gg_mem.cuh"
 extern "C" {
-    #include "gglib-c/include/gg_math.h"
+    #include "gg_math.h"
     #include "gglib-c/include/gg_io.h"
 }
 
